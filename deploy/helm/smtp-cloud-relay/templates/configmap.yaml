@@ -20,13 +20,18 @@ data:
 
   HTTP_LISTEN_ADDR: {{ .Values.http.listenAddr | quote }}
 
+  DELIVERY_RETRY_ATTEMPTS: {{ .Values.delivery.retryAttempts | quote }}
+  DELIVERY_RETRY_BASE_DELAY_MS: {{ .Values.delivery.retryBaseDelayMS | quote }}
+  DELIVERY_HTTP_TIMEOUT_MS: {{ .Values.delivery.httpTimeoutMS | quote }}
+  DELIVERY_HTTP_MAX_IDLE_CONNS: {{ .Values.delivery.httpMaxIdleConns | quote }}
+  DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST: {{ .Values.delivery.httpMaxIdleConnsPerHost | quote }}
+  DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS: {{ .Values.delivery.httpIdleConnTimeoutMS | quote }}
+
   ACS_ENDPOINT: {{ .Values.acs.endpoint | quote }}
-  ACS_RETRY_ATTEMPTS: {{ .Values.acs.retryAttempts | quote }}
-  ACS_RETRY_BASE_DELAY_MS: {{ .Values.acs.retryBaseDelayMS | quote }}
-  ACS_HTTP_TIMEOUT_MS: {{ .Values.acs.httpTimeoutMS | quote }}
-  ACS_HTTP_MAX_IDLE_CONNS: {{ .Values.acs.httpMaxIdleConns | quote }}
-  ACS_HTTP_MAX_IDLE_CONNS_PER_HOST: {{ .Values.acs.httpMaxIdleConnsPerHost | quote }}
-  ACS_HTTP_IDLE_CONN_TIMEOUT_MS: {{ .Values.acs.httpIdleConnTimeoutMS | quote }}
+  SES_REGION: {{ .Values.ses.region | quote }}
+  SES_SENDER: {{ .Values.ses.sender | quote }}
+  SES_ENDPOINT: {{ .Values.ses.endpoint | quote }}
+  SES_CONFIGURATION_SET: {{ .Values.ses.configurationSet | quote }}
   {{- if .Values.acs.tlsCAFile }}
   ACS_TLS_CA_FILE: {{ .Values.acs.tlsCAFile | quote }}
   {{- else if .Values.extraTrustedCA.enabled }}

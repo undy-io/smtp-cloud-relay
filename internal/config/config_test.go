@@ -25,38 +25,23 @@ func TestLoadDefaultsWithRequiredSecurityEnv(t *testing.T) {
 	if cfg.DeliveryMode != "acs" {
 		t.Fatalf("unexpected DeliveryMode: %q", cfg.DeliveryMode)
 	}
-	if !cfg.SMTPRequireAuth {
-		t.Fatal("expected SMTPRequireAuth=true")
+	if cfg.DeliveryRetryAttempts != 3 {
+		t.Fatalf("unexpected DeliveryRetryAttempts: %d", cfg.DeliveryRetryAttempts)
 	}
-	if cfg.SMTPAuthProvider != "static" {
-		t.Fatalf("unexpected SMTPAuthProvider: %q", cfg.SMTPAuthProvider)
+	if cfg.DeliveryRetryBaseDelayMS != 1000 {
+		t.Fatalf("unexpected DeliveryRetryBaseDelayMS: %d", cfg.DeliveryRetryBaseDelayMS)
 	}
-	if !cfg.SMTPStartTLSEnabled {
-		t.Fatal("expected SMTPStartTLSEnabled=true")
+	if cfg.DeliveryHTTPTimeoutMS != 30000 {
+		t.Fatalf("unexpected DeliveryHTTPTimeoutMS: %d", cfg.DeliveryHTTPTimeoutMS)
 	}
-	if cfg.SMTPRequireTLS {
-		t.Fatal("expected SMTPRequireTLS=false")
+	if cfg.DeliveryHTTPMaxIdleConns != 200 {
+		t.Fatalf("unexpected DeliveryHTTPMaxIdleConns: %d", cfg.DeliveryHTTPMaxIdleConns)
 	}
-	if cfg.SMTPMaxInflightSends != 200 {
-		t.Fatalf("unexpected SMTPMaxInflightSends: %d", cfg.SMTPMaxInflightSends)
+	if cfg.DeliveryHTTPMaxIdleConnsPerHost != 50 {
+		t.Fatalf("unexpected DeliveryHTTPMaxIdleConnsPerHost: %d", cfg.DeliveryHTTPMaxIdleConnsPerHost)
 	}
-	if cfg.ACSRetryAttempts != 3 {
-		t.Fatalf("unexpected ACSRetryAttempts: %d", cfg.ACSRetryAttempts)
-	}
-	if cfg.ACSRetryBaseDelayMS != 1000 {
-		t.Fatalf("unexpected ACSRetryBaseDelayMS: %d", cfg.ACSRetryBaseDelayMS)
-	}
-	if cfg.ACSHTTPTimeoutMS != 30000 {
-		t.Fatalf("unexpected ACSHTTPTimeoutMS: %d", cfg.ACSHTTPTimeoutMS)
-	}
-	if cfg.ACSHTTPMaxIdleConns != 200 {
-		t.Fatalf("unexpected ACSHTTPMaxIdleConns: %d", cfg.ACSHTTPMaxIdleConns)
-	}
-	if cfg.ACSHTTPMaxIdleConnsPerHost != 50 {
-		t.Fatalf("unexpected ACSHTTPMaxIdleConnsPerHost: %d", cfg.ACSHTTPMaxIdleConnsPerHost)
-	}
-	if cfg.ACSHTTPIdleConnTimeoutMS != 90000 {
-		t.Fatalf("unexpected ACSHTTPIdleConnTimeoutMS: %d", cfg.ACSHTTPIdleConnTimeoutMS)
+	if cfg.DeliveryHTTPIdleConnTimeoutMS != 90000 {
+		t.Fatalf("unexpected DeliveryHTTPIdleConnTimeoutMS: %d", cfg.DeliveryHTTPIdleConnTimeoutMS)
 	}
 	if cfg.ACSTLSCAFile != "" {
 		t.Fatalf("unexpected ACSTLSCAFile default: %q", cfg.ACSTLSCAFile)
@@ -64,9 +49,12 @@ func TestLoadDefaultsWithRequiredSecurityEnv(t *testing.T) {
 	if cfg.ACSTLSCAPEM != "" {
 		t.Fatalf("unexpected ACSTLSCAPEM default: %q", cfg.ACSTLSCAPEM)
 	}
+	if cfg.SESRegion != "" || cfg.SESSender != "" || cfg.SESAccessKeyID != "" {
+		t.Fatalf("expected SES defaults to be empty, got region=%q sender=%q key=%q", cfg.SESRegion, cfg.SESSender, cfg.SESAccessKeyID)
+	}
 }
 
-func TestLoadNoopModeWithoutACSConfig(t *testing.T) {
+func TestLoadNoopModeWithoutProviderConfig(t *testing.T) {
 	setSecureDefaults(t)
 	t.Setenv("DELIVERY_MODE", "noop")
 
@@ -81,6 +69,7 @@ func TestLoadNoopModeWithoutACSConfig(t *testing.T) {
 
 func TestLoadConnectionStringFromFile(t *testing.T) {
 	setSecureDefaults(t)
+	t.Setenv("DELIVERY_MODE", "acs")
 	t.Setenv("ACS_SENDER", "no-reply@example.com")
 
 	dir := t.TempDir()
@@ -100,15 +89,15 @@ func TestLoadConnectionStringFromFile(t *testing.T) {
 	}
 }
 
-func TestLoadRetryAndHTTPConfigFromEnv(t *testing.T) {
+func TestLoadDeliveryTuningFromEnv(t *testing.T) {
 	setSecureDefaults(t)
 	setACSDefaults(t)
-	t.Setenv("ACS_RETRY_ATTEMPTS", "5")
-	t.Setenv("ACS_RETRY_BASE_DELAY_MS", "250")
-	t.Setenv("ACS_HTTP_TIMEOUT_MS", "15000")
-	t.Setenv("ACS_HTTP_MAX_IDLE_CONNS", "300")
-	t.Setenv("ACS_HTTP_MAX_IDLE_CONNS_PER_HOST", "60")
-	t.Setenv("ACS_HTTP_IDLE_CONN_TIMEOUT_MS", "45000")
+	t.Setenv("DELIVERY_RETRY_ATTEMPTS", "5")
+	t.Setenv("DELIVERY_RETRY_BASE_DELAY_MS", "250")
+	t.Setenv("DELIVERY_HTTP_TIMEOUT_MS", "15000")
+	t.Setenv("DELIVERY_HTTP_MAX_IDLE_CONNS", "300")
+	t.Setenv("DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST", "60")
+	t.Setenv("DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS", "45000")
 	t.Setenv("ACS_TLS_CA_FILE", "/mnt/secrets/proxy-ca.pem")
 	t.Setenv("ACS_TLS_CA_PEM", "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----")
 
@@ -116,29 +105,57 @@ func TestLoadRetryAndHTTPConfigFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() returned error: %v", err)
 	}
-	if cfg.ACSRetryAttempts != 5 {
-		t.Fatalf("unexpected ACSRetryAttempts: %d", cfg.ACSRetryAttempts)
+	if cfg.DeliveryRetryAttempts != 5 {
+		t.Fatalf("unexpected DeliveryRetryAttempts: %d", cfg.DeliveryRetryAttempts)
 	}
-	if cfg.ACSRetryBaseDelayMS != 250 {
-		t.Fatalf("unexpected ACSRetryBaseDelayMS: %d", cfg.ACSRetryBaseDelayMS)
+	if cfg.DeliveryRetryBaseDelayMS != 250 {
+		t.Fatalf("unexpected DeliveryRetryBaseDelayMS: %d", cfg.DeliveryRetryBaseDelayMS)
 	}
-	if cfg.ACSHTTPTimeoutMS != 15000 {
-		t.Fatalf("unexpected ACSHTTPTimeoutMS: %d", cfg.ACSHTTPTimeoutMS)
+	if cfg.DeliveryHTTPTimeoutMS != 15000 {
+		t.Fatalf("unexpected DeliveryHTTPTimeoutMS: %d", cfg.DeliveryHTTPTimeoutMS)
 	}
-	if cfg.ACSHTTPMaxIdleConns != 300 {
-		t.Fatalf("unexpected ACSHTTPMaxIdleConns: %d", cfg.ACSHTTPMaxIdleConns)
+	if cfg.DeliveryHTTPMaxIdleConns != 300 {
+		t.Fatalf("unexpected DeliveryHTTPMaxIdleConns: %d", cfg.DeliveryHTTPMaxIdleConns)
 	}
-	if cfg.ACSHTTPMaxIdleConnsPerHost != 60 {
-		t.Fatalf("unexpected ACSHTTPMaxIdleConnsPerHost: %d", cfg.ACSHTTPMaxIdleConnsPerHost)
+	if cfg.DeliveryHTTPMaxIdleConnsPerHost != 60 {
+		t.Fatalf("unexpected DeliveryHTTPMaxIdleConnsPerHost: %d", cfg.DeliveryHTTPMaxIdleConnsPerHost)
 	}
-	if cfg.ACSHTTPIdleConnTimeoutMS != 45000 {
-		t.Fatalf("unexpected ACSHTTPIdleConnTimeoutMS: %d", cfg.ACSHTTPIdleConnTimeoutMS)
+	if cfg.DeliveryHTTPIdleConnTimeoutMS != 45000 {
+		t.Fatalf("unexpected DeliveryHTTPIdleConnTimeoutMS: %d", cfg.DeliveryHTTPIdleConnTimeoutMS)
 	}
 	if cfg.ACSTLSCAFile != "/mnt/secrets/proxy-ca.pem" {
 		t.Fatalf("unexpected ACSTLSCAFile: %q", cfg.ACSTLSCAFile)
 	}
 	if cfg.ACSTLSCAPEM == "" {
 		t.Fatal("expected ACSTLSCAPEM to be loaded")
+	}
+}
+
+func TestLoadSESModeAndStaticCredentials(t *testing.T) {
+	setSecureDefaults(t)
+	t.Setenv("DELIVERY_MODE", "ses")
+	t.Setenv("SES_REGION", "us-gov-west-1")
+	t.Setenv("SES_SENDER", "no-reply@example.com")
+	t.Setenv("SES_CONFIGURATION_SET", "relay-config")
+	t.Setenv("SES_ACCESS_KEY_ID", "AKIA_TEST")
+	t.Setenv("SES_SECRET_ACCESS_KEY", "secret")
+	t.Setenv("SES_SESSION_TOKEN", "token")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.DeliveryMode != "ses" {
+		t.Fatalf("unexpected DeliveryMode: %q", cfg.DeliveryMode)
+	}
+	if cfg.SESRegion != "us-gov-west-1" {
+		t.Fatalf("unexpected SESRegion: %q", cfg.SESRegion)
+	}
+	if cfg.SESSender != "no-reply@example.com" {
+		t.Fatalf("unexpected SESSender: %q", cfg.SESSender)
+	}
+	if cfg.SESConfigurationSet != "relay-config" {
+		t.Fatalf("unexpected SESConfigurationSet: %q", cfg.SESConfigurationSet)
 	}
 }
 
@@ -179,6 +196,7 @@ func TestLoadValidationErrors(t *testing.T) {
 		{
 			name: "acs mode requires connection string",
 			env: map[string]string{
+				"DELIVERY_MODE":         "acs",
 				"ACS_CONNECTION_STRING": "",
 			},
 			substr: "ACS_CONNECTION_STRING is required",
@@ -186,9 +204,49 @@ func TestLoadValidationErrors(t *testing.T) {
 		{
 			name: "acs mode requires sender",
 			env: map[string]string{
-				"ACS_SENDER": "",
+				"DELIVERY_MODE": "acs",
+				"ACS_SENDER":    "",
 			},
 			substr: "ACS_SENDER is required",
+		},
+		{
+			name: "ses mode requires region",
+			env: map[string]string{
+				"DELIVERY_MODE": "ses",
+				"SES_REGION":    "",
+				"SES_SENDER":    "no-reply@example.com",
+			},
+			substr: "SES_REGION is required",
+		},
+		{
+			name: "ses mode requires sender",
+			env: map[string]string{
+				"DELIVERY_MODE": "ses",
+				"SES_REGION":    "us-gov-west-1",
+				"SES_SENDER":    "",
+			},
+			substr: "SES_SENDER is required",
+		},
+		{
+			name: "ses static credentials must be paired",
+			env: map[string]string{
+				"DELIVERY_MODE":         "ses",
+				"SES_REGION":            "us-gov-west-1",
+				"SES_SENDER":            "no-reply@example.com",
+				"SES_ACCESS_KEY_ID":     "AKIA_TEST",
+				"SES_SECRET_ACCESS_KEY": "",
+			},
+			substr: "must both be set or both be empty",
+		},
+		{
+			name: "ses session token requires static credentials",
+			env: map[string]string{
+				"DELIVERY_MODE":     "ses",
+				"SES_REGION":        "us-gov-west-1",
+				"SES_SENDER":        "no-reply@example.com",
+				"SES_SESSION_TOKEN": "token",
+			},
+			substr: "SES_SESSION_TOKEN requires",
 		},
 		{
 			name: "cidr required",
@@ -258,51 +316,51 @@ func TestLoadValidationErrors(t *testing.T) {
 		{
 			name: "retry attempts positive",
 			env: map[string]string{
-				"ACS_RETRY_ATTEMPTS": "0",
+				"DELIVERY_RETRY_ATTEMPTS": "0",
 			},
-			substr: "ACS_RETRY_ATTEMPTS must be >= 1",
+			substr: "DELIVERY_RETRY_ATTEMPTS must be >= 1",
 		},
 		{
 			name: "retry delay positive",
 			env: map[string]string{
-				"ACS_RETRY_BASE_DELAY_MS": "0",
+				"DELIVERY_RETRY_BASE_DELAY_MS": "0",
 			},
-			substr: "ACS_RETRY_BASE_DELAY_MS must be >= 1",
+			substr: "DELIVERY_RETRY_BASE_DELAY_MS must be >= 1",
 		},
 		{
 			name: "retry attempts upper bounded",
 			env: map[string]string{
-				"ACS_RETRY_ATTEMPTS": "11",
+				"DELIVERY_RETRY_ATTEMPTS": "11",
 			},
-			substr: "ACS_RETRY_ATTEMPTS must be <=",
+			substr: "DELIVERY_RETRY_ATTEMPTS must be <=",
 		},
 		{
 			name: "timeout positive",
 			env: map[string]string{
-				"ACS_HTTP_TIMEOUT_MS": "0",
+				"DELIVERY_HTTP_TIMEOUT_MS": "0",
 			},
-			substr: "ACS_HTTP_TIMEOUT_MS must be >= 1",
+			substr: "DELIVERY_HTTP_TIMEOUT_MS must be >= 1",
 		},
 		{
 			name: "max idle positive",
 			env: map[string]string{
-				"ACS_HTTP_MAX_IDLE_CONNS": "0",
+				"DELIVERY_HTTP_MAX_IDLE_CONNS": "0",
 			},
-			substr: "ACS_HTTP_MAX_IDLE_CONNS must be >= 1",
+			substr: "DELIVERY_HTTP_MAX_IDLE_CONNS must be >= 1",
 		},
 		{
 			name: "max idle per host positive",
 			env: map[string]string{
-				"ACS_HTTP_MAX_IDLE_CONNS_PER_HOST": "0",
+				"DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST": "0",
 			},
-			substr: "ACS_HTTP_MAX_IDLE_CONNS_PER_HOST must be >= 1",
+			substr: "DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST must be >= 1",
 		},
 		{
 			name: "idle timeout positive",
 			env: map[string]string{
-				"ACS_HTTP_IDLE_CONN_TIMEOUT_MS": "0",
+				"DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS": "0",
 			},
-			substr: "ACS_HTTP_IDLE_CONN_TIMEOUT_MS must be >= 1",
+			substr: "DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS must be >= 1",
 		},
 	}
 

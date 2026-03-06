@@ -173,6 +173,14 @@ type SendError struct {
 	Err        error
 }
 
+var _ email.DeliveryError = (*SendError)(nil)
+
+func (e *SendError) ProviderName() string { return "acs" }
+
+func (e *SendError) Temporary() bool { return e.Retryable }
+
+func (e *SendError) HTTPStatusCode() int { return e.StatusCode }
+
 func (e *SendError) Error() string {
 	prefix := fmt.Sprintf("acs send failed request_id=%s attempt=%d/%d retryable=%t", e.RequestID, e.Attempt, e.Attempts, e.Retryable)
 	if e.StatusCode > 0 {

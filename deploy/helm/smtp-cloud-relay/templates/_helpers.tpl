@@ -47,3 +47,36 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- required "secrets.existingSecret is required when secrets.create=false" .Values.secrets.existingSecret -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "smtp-cloud-relay.validateValues" -}}
+{{- $mode := lower (default "acs" .Values.deliveryMode) -}}
+{{- if not (has $mode (list "acs" "ses" "noop")) -}}
+{{- fail (printf "deliveryMode must be one of: acs, ses, noop (got %q)" .Values.deliveryMode) -}}
+{{- end -}}
+
+{{- if and (eq $mode "acs") .Values.secrets.create -}}
+{{- if not .Values.secrets.acsConnectionString -}}
+{{- fail "secrets.acsConnectionString is required when deliveryMode=acs and secrets.create=true" -}}
+{{- end -}}
+{{- if not .Values.secrets.acsSender -}}
+{{- fail "secrets.acsSender is required when deliveryMode=acs and secrets.create=true" -}}
+{{- end -}}
+{{- end -}}
+
+{{- if eq $mode "ses" -}}
+{{- if not .Values.ses.region -}}
+{{- fail "ses.region is required when deliveryMode=ses" -}}
+{{- end -}}
+{{- if not .Values.ses.sender -}}
+{{- fail "ses.sender is required when deliveryMode=ses" -}}
+{{- end -}}
+{{- $access := default "" .Values.secrets.sesAccessKeyID -}}
+{{- $secret := default "" .Values.secrets.sesSecretAccessKey -}}
+{{- if and (or (and $access (not $secret)) (and $secret (not $access))) .Values.secrets.create -}}
+{{- fail "secrets.sesAccessKeyID and secrets.sesSecretAccessKey must both be set or both be empty when secrets.create=true" -}}
+{{- end -}}
+{{- if and .Values.secrets.create .Values.secrets.sesSessionToken (or (not $access) (not $secret)) -}}
+{{- fail "secrets.sesSessionToken requires both secrets.sesAccessKeyID and secrets.sesSecretAccessKey when secrets.create=true" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

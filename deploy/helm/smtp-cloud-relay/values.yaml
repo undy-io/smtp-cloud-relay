@@ -44,6 +44,14 @@ affinity: {}
 
 deliveryMode: acs
 
+delivery:
+  retryAttempts: 3
+  retryBaseDelayMS: 1000
+  httpTimeoutMS: 30000
+  httpMaxIdleConns: 200
+  httpMaxIdleConnsPerHost: 50
+  httpIdleConnTimeoutMS: 90000
+
 proxy:
   httpProxy: ""
   httpsProxy: ""
@@ -65,25 +73,31 @@ http:
 
 acs:
   endpoint: ""
-  retryAttempts: 3
-  retryBaseDelayMS: 1000
-  httpTimeoutMS: 30000
-  httpMaxIdleConns: 200
-  httpMaxIdleConnsPerHost: 50
-  httpIdleConnTimeoutMS: 90000
   tlsCAFile: ""
+
+ses:
+  region: ""
+  sender: ""
+  endpoint: ""
+  configurationSet: ""
 
 secrets:
   create: true
   existingSecret: ""
   acsConnectionString: ""
   acsSender: ""
+  sesAccessKeyID: ""
+  sesSecretAccessKey: ""
+  sesSessionToken: ""
   smtpAuthUsername: ""
   smtpAuthPassword: ""
   acsTLSCAPEM: ""
   keys:
     acsConnectionString: ACS_CONNECTION_STRING
     acsSender: ACS_SENDER
+    sesAccessKeyID: SES_ACCESS_KEY_ID
+    sesSecretAccessKey: SES_SECRET_ACCESS_KEY
+    sesSessionToken: SES_SESSION_TOKEN
     smtpAuthUsername: SMTP_AUTH_USERNAME
     smtpAuthPassword: SMTP_AUTH_PASSWORD
     acsTLSCAPEM: ACS_TLS_CA_PEM
@@ -96,11 +110,14 @@ tls:
 certManager:
   enabled: true
   issuerRef:
+    group: cert-manager.io
     kind: ClusterIssuer
     name: cluster-issuer
   commonName: ""
   dnsNames:
     - smtp-cloud-relay.default.svc
+  altNames: []
+  subject: {}
   duration: 2160h
   renewBefore: 360h
 

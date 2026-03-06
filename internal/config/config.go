@@ -9,21 +9,21 @@ import (
 )
 
 const (
-	defaultSMTPListenAddr             = "0.0.0.0:2525"
-	defaultHTTPListenAddr             = "0.0.0.0:8080"
-	defaultACSRetryAttempts           = 3
-	maxACSRetryAttempts               = 10
-	defaultACSRetryBaseDelayMS        = 1000
-	defaultDeliveryMode               = "acs"
-	defaultSMTPRequireAuth            = true
-	defaultSMTPAuthProvider           = "static"
-	defaultSMTPStartTLSEnabled        = true
-	defaultSMTPRequireTLS             = false
-	defaultSMTPMaxInflightSends       = 200
-	defaultACSHTTPTimeoutMS           = 30000
-	defaultACSHTTPMaxIdleConns        = 200
-	defaultACSHTTPMaxIdleConnsPerHost = 50
-	defaultACSHTTPIdleConnTimeoutMS   = 90000
+	defaultSMTPListenAddr                  = "0.0.0.0:2525"
+	defaultHTTPListenAddr                  = "0.0.0.0:8080"
+	defaultDeliveryRetryAttempts           = 3
+	maxDeliveryRetryAttempts               = 10
+	defaultDeliveryRetryBaseDelayMS        = 1000
+	defaultDeliveryMode                    = "acs"
+	defaultSMTPRequireAuth                 = true
+	defaultSMTPAuthProvider                = "static"
+	defaultSMTPStartTLSEnabled             = true
+	defaultSMTPRequireTLS                  = false
+	defaultSMTPMaxInflightSends            = 200
+	defaultDeliveryHTTPTimeoutMS           = 30000
+	defaultDeliveryHTTPMaxIdleConns        = 200
+	defaultDeliveryHTTPMaxIdleConnsPerHost = 50
+	defaultDeliveryHTTPIdleConnTimeoutMS   = 90000
 )
 
 // Config is runtime configuration loaded from env vars and/or mounted secret files.
@@ -43,37 +43,46 @@ type Config struct {
 	SMTPTLSKeyFile       string
 	SMTPMaxInflightSends int
 
-	ACSEndpoint                string
-	ACSConnectionString        string
-	ACSSender                  string
-	ACSRetryAttempts           int
-	ACSRetryBaseDelayMS        int
-	ACSHTTPTimeoutMS           int
-	ACSHTTPMaxIdleConns        int
-	ACSHTTPMaxIdleConnsPerHost int
-	ACSHTTPIdleConnTimeoutMS   int
-	ACSTLSCAFile               string
-	ACSTLSCAPEM                string
+	DeliveryRetryAttempts           int
+	DeliveryRetryBaseDelayMS        int
+	DeliveryHTTPTimeoutMS           int
+	DeliveryHTTPMaxIdleConns        int
+	DeliveryHTTPMaxIdleConnsPerHost int
+	DeliveryHTTPIdleConnTimeoutMS   int
+
+	ACSEndpoint         string
+	ACSConnectionString string
+	ACSSender           string
+	ACSTLSCAFile        string
+	ACSTLSCAPEM         string
+
+	SESRegion           string
+	SESSender           string
+	SESEndpoint         string
+	SESConfigurationSet string
+	SESAccessKeyID      string
+	SESSecretAccessKey  string
+	SESSessionToken     string
 }
 
 // Load reads configuration from environment.
 // For each variable X, this also supports X_FILE to read secret values from mounted files.
 func Load() (Config, error) {
 	cfg := Config{
-		SMTPListenAddr:             defaultSMTPListenAddr,
-		HTTPListenAddr:             defaultHTTPListenAddr,
-		DeliveryMode:               defaultDeliveryMode,
-		SMTPRequireAuth:            defaultSMTPRequireAuth,
-		SMTPAuthProvider:           defaultSMTPAuthProvider,
-		SMTPStartTLSEnabled:        defaultSMTPStartTLSEnabled,
-		SMTPRequireTLS:             defaultSMTPRequireTLS,
-		SMTPMaxInflightSends:       defaultSMTPMaxInflightSends,
-		ACSRetryAttempts:           defaultACSRetryAttempts,
-		ACSRetryBaseDelayMS:        defaultACSRetryBaseDelayMS,
-		ACSHTTPTimeoutMS:           defaultACSHTTPTimeoutMS,
-		ACSHTTPMaxIdleConns:        defaultACSHTTPMaxIdleConns,
-		ACSHTTPMaxIdleConnsPerHost: defaultACSHTTPMaxIdleConnsPerHost,
-		ACSHTTPIdleConnTimeoutMS:   defaultACSHTTPIdleConnTimeoutMS,
+		SMTPListenAddr:                  defaultSMTPListenAddr,
+		HTTPListenAddr:                  defaultHTTPListenAddr,
+		DeliveryMode:                    defaultDeliveryMode,
+		SMTPRequireAuth:                 defaultSMTPRequireAuth,
+		SMTPAuthProvider:                defaultSMTPAuthProvider,
+		SMTPStartTLSEnabled:             defaultSMTPStartTLSEnabled,
+		SMTPRequireTLS:                  defaultSMTPRequireTLS,
+		SMTPMaxInflightSends:            defaultSMTPMaxInflightSends,
+		DeliveryRetryAttempts:           defaultDeliveryRetryAttempts,
+		DeliveryRetryBaseDelayMS:        defaultDeliveryRetryBaseDelayMS,
+		DeliveryHTTPTimeoutMS:           defaultDeliveryHTTPTimeoutMS,
+		DeliveryHTTPMaxIdleConns:        defaultDeliveryHTTPMaxIdleConns,
+		DeliveryHTTPMaxIdleConnsPerHost: defaultDeliveryHTTPMaxIdleConnsPerHost,
+		DeliveryHTTPIdleConnTimeoutMS:   defaultDeliveryHTTPIdleConnTimeoutMS,
 	}
 
 	var err error
@@ -150,6 +159,31 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	cfg.DeliveryRetryAttempts, err = envOrFileInt("DELIVERY_RETRY_ATTEMPTS", defaultDeliveryRetryAttempts)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DeliveryRetryBaseDelayMS, err = envOrFileInt("DELIVERY_RETRY_BASE_DELAY_MS", defaultDeliveryRetryBaseDelayMS)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DeliveryHTTPTimeoutMS, err = envOrFileInt("DELIVERY_HTTP_TIMEOUT_MS", defaultDeliveryHTTPTimeoutMS)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DeliveryHTTPMaxIdleConns, err = envOrFileInt("DELIVERY_HTTP_MAX_IDLE_CONNS", defaultDeliveryHTTPMaxIdleConns)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DeliveryHTTPMaxIdleConnsPerHost, err = envOrFileInt("DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST", defaultDeliveryHTTPMaxIdleConnsPerHost)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DeliveryHTTPIdleConnTimeoutMS, err = envOrFileInt("DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS", defaultDeliveryHTTPIdleConnTimeoutMS)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg.ACSEndpoint, err = envOrFile("ACS_ENDPOINT")
 	if err != nil {
 		return Config{}, err
@@ -162,37 +196,40 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.ACSRetryAttempts, err = envOrFileInt("ACS_RETRY_ATTEMPTS", defaultACSRetryAttempts)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.ACSRetryBaseDelayMS, err = envOrFileInt("ACS_RETRY_BASE_DELAY_MS", defaultACSRetryBaseDelayMS)
-	if err != nil {
-		return Config{}, err
-	}
-
-	cfg.ACSHTTPTimeoutMS, err = envOrFileInt("ACS_HTTP_TIMEOUT_MS", defaultACSHTTPTimeoutMS)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.ACSHTTPMaxIdleConns, err = envOrFileInt("ACS_HTTP_MAX_IDLE_CONNS", defaultACSHTTPMaxIdleConns)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.ACSHTTPMaxIdleConnsPerHost, err = envOrFileInt("ACS_HTTP_MAX_IDLE_CONNS_PER_HOST", defaultACSHTTPMaxIdleConnsPerHost)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.ACSHTTPIdleConnTimeoutMS, err = envOrFileInt("ACS_HTTP_IDLE_CONN_TIMEOUT_MS", defaultACSHTTPIdleConnTimeoutMS)
-	if err != nil {
-		return Config{}, err
-	}
-
 	cfg.ACSTLSCAFile, err = envOrFile("ACS_TLS_CA_FILE")
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.ACSTLSCAPEM, err = envOrFile("ACS_TLS_CA_PEM")
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.SESRegion, err = envOrFile("SES_REGION")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SESSender, err = envOrFile("SES_SENDER")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SESEndpoint, err = envOrFile("SES_ENDPOINT")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SESConfigurationSet, err = envOrFile("SES_CONFIGURATION_SET")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SESAccessKeyID, err = envOrFile("SES_ACCESS_KEY_ID")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SESSecretAccessKey, err = envOrFile("SES_SECRET_ACCESS_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SESSessionToken, err = envOrFile("SES_SESSION_TOKEN")
 	if err != nil {
 		return Config{}, err
 	}
@@ -206,17 +243,35 @@ func Load() (Config, error) {
 
 func (c Config) Validate() error {
 	switch c.DeliveryMode {
-	case "acs", "noop":
+	case "acs", "noop", "ses":
 	default:
-		return fmt.Errorf("DELIVERY_MODE must be one of: acs, noop")
+		return fmt.Errorf("DELIVERY_MODE must be one of: acs, noop, ses")
 	}
 
-	if c.DeliveryMode == "acs" {
+	switch c.DeliveryMode {
+	case "acs":
 		if strings.TrimSpace(c.ACSConnectionString) == "" {
 			return fmt.Errorf("ACS_CONNECTION_STRING is required when DELIVERY_MODE=acs")
 		}
 		if strings.TrimSpace(c.ACSSender) == "" {
 			return fmt.Errorf("ACS_SENDER is required when DELIVERY_MODE=acs")
+		}
+	case "ses":
+		if strings.TrimSpace(c.SESRegion) == "" {
+			return fmt.Errorf("SES_REGION is required when DELIVERY_MODE=ses")
+		}
+		if strings.TrimSpace(c.SESSender) == "" {
+			return fmt.Errorf("SES_SENDER is required when DELIVERY_MODE=ses")
+		}
+		access := strings.TrimSpace(c.SESAccessKeyID)
+		secret := strings.TrimSpace(c.SESSecretAccessKey)
+		hasAccess := access != ""
+		hasSecret := secret != ""
+		if hasAccess != hasSecret {
+			return fmt.Errorf("SES_ACCESS_KEY_ID and SES_SECRET_ACCESS_KEY must both be set or both be empty")
+		}
+		if strings.TrimSpace(c.SESSessionToken) != "" && (!hasAccess || !hasSecret) {
+			return fmt.Errorf("SES_SESSION_TOKEN requires SES_ACCESS_KEY_ID and SES_SECRET_ACCESS_KEY")
 		}
 	}
 
@@ -253,26 +308,26 @@ func (c Config) Validate() error {
 	if c.SMTPMaxInflightSends < 1 {
 		return fmt.Errorf("SMTP_MAX_INFLIGHT_SENDS must be >= 1")
 	}
-	if c.ACSRetryAttempts < 1 {
-		return fmt.Errorf("ACS_RETRY_ATTEMPTS must be >= 1")
+	if c.DeliveryRetryAttempts < 1 {
+		return fmt.Errorf("DELIVERY_RETRY_ATTEMPTS must be >= 1")
 	}
-	if c.ACSRetryAttempts > maxACSRetryAttempts {
-		return fmt.Errorf("ACS_RETRY_ATTEMPTS must be <= %d", maxACSRetryAttempts)
+	if c.DeliveryRetryAttempts > maxDeliveryRetryAttempts {
+		return fmt.Errorf("DELIVERY_RETRY_ATTEMPTS must be <= %d", maxDeliveryRetryAttempts)
 	}
-	if c.ACSRetryBaseDelayMS < 1 {
-		return fmt.Errorf("ACS_RETRY_BASE_DELAY_MS must be >= 1")
+	if c.DeliveryRetryBaseDelayMS < 1 {
+		return fmt.Errorf("DELIVERY_RETRY_BASE_DELAY_MS must be >= 1")
 	}
-	if c.ACSHTTPTimeoutMS < 1 {
-		return fmt.Errorf("ACS_HTTP_TIMEOUT_MS must be >= 1")
+	if c.DeliveryHTTPTimeoutMS < 1 {
+		return fmt.Errorf("DELIVERY_HTTP_TIMEOUT_MS must be >= 1")
 	}
-	if c.ACSHTTPMaxIdleConns < 1 {
-		return fmt.Errorf("ACS_HTTP_MAX_IDLE_CONNS must be >= 1")
+	if c.DeliveryHTTPMaxIdleConns < 1 {
+		return fmt.Errorf("DELIVERY_HTTP_MAX_IDLE_CONNS must be >= 1")
 	}
-	if c.ACSHTTPMaxIdleConnsPerHost < 1 {
-		return fmt.Errorf("ACS_HTTP_MAX_IDLE_CONNS_PER_HOST must be >= 1")
+	if c.DeliveryHTTPMaxIdleConnsPerHost < 1 {
+		return fmt.Errorf("DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST must be >= 1")
 	}
-	if c.ACSHTTPIdleConnTimeoutMS < 1 {
-		return fmt.Errorf("ACS_HTTP_IDLE_CONN_TIMEOUT_MS must be >= 1")
+	if c.DeliveryHTTPIdleConnTimeoutMS < 1 {
+		return fmt.Errorf("DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS must be >= 1")
 	}
 
 	return nil

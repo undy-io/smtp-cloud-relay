@@ -50,6 +50,24 @@ spec:
                   name: {{ include "smtp-cloud-relay.secretName" . }}
                   key: {{ .Values.secrets.keys.acsSender }}
                   optional: {{ ne .Values.deliveryMode "acs" }}
+            - name: SES_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.sesAccessKeyID }}
+                  optional: true
+            - name: SES_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.sesSecretAccessKey }}
+                  optional: true
+            - name: SES_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.sesSessionToken }}
+                  optional: true
             - name: SMTP_AUTH_USERNAME
               valueFrom:
                 secretKeyRef:

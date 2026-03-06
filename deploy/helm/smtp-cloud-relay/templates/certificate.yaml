@@ -1,4 +1,18 @@
-{{- if .Values.certManager.enabled }}
+{{- if and .Values.certManager.enabled (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
+{{- $cn := .Values.certManager.commonName -}}
+{{- $san := list -}}
+{{- range .Values.certManager.dnsNames }}
+{{- $san = append $san . -}}
+{{- end }}
+{{- range .Values.certManager.altNames }}
+{{- $san = append $san . -}}
+{{- end }}
+{{- if and $cn (not (has $cn $san)) }}
+{{- $san = append $san $cn -}}
+{{- end }}
+{{- if and (not $cn) (eq (len $san) 0) }}
+{{- fail "certManager.commonName or certManager.dnsNames/altNames must provide at least one DNS name when certManager.enabled=true" -}}
+{{- end }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -10,13 +24,41 @@ spec:
   duration: {{ .Values.certManager.duration }}
   renewBefore: {{ .Values.certManager.renewBefore }}
   issuerRef:
+    {{- if .Values.certManager.issuerRef.group }}
+    group: {{ .Values.certManager.issuerRef.group }}
+    {{- end }}
     kind: {{ required "certManager.issuerRef.kind is required when certManager.enabled=true" .Values.certManager.issuerRef.kind }}
     name: {{ required "certManager.issuerRef.name is required when certManager.enabled=true" .Values.certManager.issuerRef.name }}
-  {{- if .Values.certManager.commonName }}
-  commonName: {{ .Values.certManager.commonName | quote }}
+  {{- if $cn }}
+  commonName: {{ $cn | quote }}
   {{- end }}
+  {{- if gt (len $san) 0 }}
   dnsNames:
-    {{- range .Values.certManager.dnsNames }}
+    {{- range $san }}
     - {{ . | quote }}
     {{- end }}
+  {{- end }}
+  {{- with .Values.certManager.subject }}
+  subject:
+    {{- if .organizations }}
+    organizations:
+      {{- toYaml .organizations | nindent 6 }}
+    {{- end }}
+    {{- if .organizationalUnits }}
+    organizationalUnits:
+      {{- toYaml .organizationalUnits | nindent 6 }}
+    {{- end }}
+    {{- if .countries }}
+    countries:
+      {{- toYaml .countries | nindent 6 }}
+    {{- end }}
+    {{- if .localities }}
+    localities:
+      {{- toYaml .localities | nindent 6 }}
+    {{- end }}
+    {{- if .provinces }}
+    provinces:
+      {{- toYaml .provinces | nindent 6 }}
+    {{- end }}
+  {{- end }}
 {{- end }}

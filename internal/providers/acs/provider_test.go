@@ -376,6 +376,19 @@ func TestSendDoesNotRetryOn400AndReturnsTypedError(t *testing.T) {
 	if !errors.As(err, &sendErr) {
 		t.Fatalf("expected *SendError, got %T", err)
 	}
+	var deliveryErr email.DeliveryError
+	if !errors.As(err, &deliveryErr) {
+		t.Fatalf("expected email.DeliveryError, got %T", err)
+	}
+	if deliveryErr.ProviderName() != "acs" {
+		t.Fatalf("unexpected provider name: %q", deliveryErr.ProviderName())
+	}
+	if deliveryErr.Temporary() {
+		t.Fatalf("expected temporary=false for 400")
+	}
+	if deliveryErr.HTTPStatusCode() != http.StatusBadRequest {
+		t.Fatalf("unexpected delivery status code: %d", deliveryErr.HTTPStatusCode())
+	}
 	if sendErr.RequestID == "" {
 		t.Fatalf("expected request id")
 	}
