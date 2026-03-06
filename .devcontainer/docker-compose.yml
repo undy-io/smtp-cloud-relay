@@ -1,0 +1,18 @@
+version: "3.8"
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ..:/workspaces/smtp-cloud-relay:cached
+    command: sleep infinity
+    ports:
+      - "2525:2525"
+      - "8080:8080"
+    environment:
+      - SMTP_LISTEN_ADDR=0.0.0.0:2525
+      - HTTP_LISTEN_ADDR=0.0.0.0:8080
+      - ACS_ENDPOINT
+      - ACS_CONNECTION_STRING
+      - ACS_SENDER

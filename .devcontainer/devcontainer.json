@@ -1,0 +1,56 @@
+{
+  "name": "smtp-cloud-relay-dev",
+
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspaces/smtp-cloud-relay",
+
+  "shutdownAction": "stopCompose",
+  "remoteUser": "vscode",
+
+  "updateRemoteUserUID": false,
+
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "forwardPorts": [2525, 8080],
+
+  "portsAttributes": {
+    "2525": { "label": "SMTP relay (dev)", "onAutoForward": "notify" },
+    "8080": { "label": "Health / metrics endpoint", "onAutoForward": "openBrowser" }
+  },
+
+  "containerEnv": {
+    "SMTP_LISTEN_ADDR": "0.0.0.0:2525",
+    "HTTP_LISTEN_ADDR": "0.0.0.0:8080",
+    "ACS_ENDPOINT": "",
+    "ACS_CONNECTION_STRING": "",
+    "ACS_SENDER": ""
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-python.python",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml",
+        "dbaeumer.vscode-eslint",
+        "timonwong.shellcheck"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.toolsManagement.autoUpdate": true,
+        "python.defaultInterpreterPath": "/usr/bin/python3",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+
+  "postCreateCommand": "bash -lc 'python -m pip install --upgrade pip && pip install pre-commit && go version && python --version && node --version && npm --version'",
+  "postStartCommand": "echo \"Devcontainer ready. SMTP relay listening on :2525\""
+}

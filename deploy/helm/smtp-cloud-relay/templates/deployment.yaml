@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "smtp-cloud-relay.fullname" . }}
+  labels:
+    {{- include "smtp-cloud-relay.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "smtp-cloud-relay.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "smtp-cloud-relay.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "smtp-cloud-relay.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: relay
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "smtp-cloud-relay.fullname" . }}-config
+          env:
+            - name: ACS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.acsConnectionString }}
+                  optional: {{ ne .Values.deliveryMode "acs" }}
+            - name: ACS_SENDER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.acsSender }}
+                  optional: {{ ne .Values.deliveryMode "acs" }}
+            - name: SMTP_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.smtpAuthUsername }}
+                  optional: false
+            - name: SMTP_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.smtpAuthPassword }}
+                  optional: false
+            - name: ACS_TLS_CA_PEM
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "smtp-cloud-relay.secretName" . }}
+                  key: {{ .Values.secrets.keys.acsTLSCAPEM }}
+                  optional: true
+            {{- if .Values.proxy.httpProxy }}
+            - name: HTTP_PROXY
+              value: {{ .Values.proxy.httpProxy | quote }}
+            {{- end }}
+            {{- if .Values.proxy.httpsProxy }}
+            - name: HTTPS_PROXY
+              value: {{ .Values.proxy.httpsProxy | quote }}
+            {{- end }}
+            {{- if .Values.proxy.noProxy }}
+            - name: NO_PROXY
+              value: {{ .Values.proxy.noProxy | quote }}
+            {{- end }}
+          ports:
+            - name: smtp
+              containerPort: {{ .Values.service.smtpPort }}
+              protocol: TCP
+            - name: smtps
+              containerPort: {{ .Values.service.smtpsPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if or .Values.smtp.starttlsEnabled .Values.smtp.smtpsListenAddr }}
+            - name: smtp-tls
+              mountPath: /etc/smtp-tls
+              readOnly: true
+            {{- end }}
+            {{- if .Values.extraTrustedCA.enabled }}
+            - name: acs-extra-ca
+              mountPath: {{ .Values.extraTrustedCA.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if or .Values.smtp.starttlsEnabled .Values.smtp.smtpsListenAddr }}
+        - name: smtp-tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+        {{- end }}
+        {{- if .Values.extraTrustedCA.enabled }}
+        - name: acs-extra-ca
+          secret:
+            secretName: {{ .Values.extraTrustedCA.existingSecret }}
+            items:
+              - key: {{ .Values.extraTrustedCA.key }}
+                path: {{ .Values.extraTrustedCA.key }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

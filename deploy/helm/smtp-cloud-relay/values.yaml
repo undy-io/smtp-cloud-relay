@@ -1,0 +1,135 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/undy-io/smtp-cloud-relay
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  smtpPort: 2525
+  smtpsPort: 2465
+  httpPort: 8080
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+deliveryMode: acs
+
+proxy:
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""
+
+smtp:
+  listenAddr: 0.0.0.0:2525
+  smtpsListenAddr: 0.0.0.0:2465
+  allowedCIDRs:
+    - 10.0.0.0/8
+  requireAuth: true
+  authProvider: static
+  starttlsEnabled: true
+  requireTLS: false
+  maxInflightSends: 200
+
+http:
+  listenAddr: 0.0.0.0:8080
+
+acs:
+  endpoint: ""
+  retryAttempts: 3
+  retryBaseDelayMS: 1000
+  httpTimeoutMS: 30000
+  httpMaxIdleConns: 200
+  httpMaxIdleConnsPerHost: 50
+  httpIdleConnTimeoutMS: 90000
+  tlsCAFile: ""
+
+secrets:
+  create: true
+  existingSecret: ""
+  acsConnectionString: ""
+  acsSender: ""
+  smtpAuthUsername: ""
+  smtpAuthPassword: ""
+  acsTLSCAPEM: ""
+  keys:
+    acsConnectionString: ACS_CONNECTION_STRING
+    acsSender: ACS_SENDER
+    smtpAuthUsername: SMTP_AUTH_USERNAME
+    smtpAuthPassword: SMTP_AUTH_PASSWORD
+    acsTLSCAPEM: ACS_TLS_CA_PEM
+
+tls:
+  certFile: /etc/smtp-tls/tls.crt
+  keyFile: /etc/smtp-tls/tls.key
+  existingSecret: smtp-cloud-relay-tls
+
+certManager:
+  enabled: true
+  issuerRef:
+    kind: ClusterIssuer
+    name: cluster-issuer
+  commonName: ""
+  dnsNames:
+    - smtp-cloud-relay.default.svc
+  duration: 2160h
+  renewBefore: 360h
+
+extraTrustedCA:
+  enabled: false
+  mountPath: /etc/acs-ca
+  existingSecret: ""
+  key: ca.pem
+
+probes:
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+networkPolicy:
+  enabled: true
+  allowDNS: true
+  ingressCIDRs:
+    - 10.0.0.0/8
+  egressCIDRs:
+    - 0.0.0.0/0
+
+pdb:
+  enabled: false
+  minAvailable: 1

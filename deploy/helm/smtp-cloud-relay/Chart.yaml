@@ -1,0 +1,6 @@
+apiVersion: v2
+name: smtp-cloud-relay
+description: SMTP intake relay that forwards messages to Azure Communication Services Email API
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

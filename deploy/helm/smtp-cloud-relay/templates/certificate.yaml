@@ -1,0 +1,22 @@
+{{- if .Values.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "smtp-cloud-relay.fullname" . }}
+  labels:
+    {{- include "smtp-cloud-relay.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.tls.existingSecret }}
+  duration: {{ .Values.certManager.duration }}
+  renewBefore: {{ .Values.certManager.renewBefore }}
+  issuerRef:
+    kind: {{ required "certManager.issuerRef.kind is required when certManager.enabled=true" .Values.certManager.issuerRef.kind }}
+    name: {{ required "certManager.issuerRef.name is required when certManager.enabled=true" .Values.certManager.issuerRef.name }}
+  {{- if .Values.certManager.commonName }}
+  commonName: {{ .Values.certManager.commonName | quote }}
+  {{- end }}
+  dnsNames:
+    {{- range .Values.certManager.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+{{- end }}

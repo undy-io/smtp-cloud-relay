@@ -1,0 +1,12 @@
+# .codex/config.toml
+# Keep agent behavior predictable for infra / security-sensitive code.
+[project]
+root = "."
+
+[agent]
+# Encourage conservative changes and explicit diffs.
+style = "review-first"
+
+[sandbox]
+# Prefer safety: no network by default unless you intentionally enable it in Codex settings.
+network = "off"

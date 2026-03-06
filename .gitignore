@@ -1,0 +1,24 @@
+# Go build/test artifacts
+bin/
+dist/
+out/
+*.test
+coverage.out
+
+# Local runtime files
+tmp/
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
