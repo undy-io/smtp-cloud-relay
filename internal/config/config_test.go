@@ -43,11 +43,11 @@ func TestLoadDefaultsWithRequiredSecurityEnv(t *testing.T) {
 	if cfg.DeliveryHTTPIdleConnTimeoutMS != 90000 {
 		t.Fatalf("unexpected DeliveryHTTPIdleConnTimeoutMS: %d", cfg.DeliveryHTTPIdleConnTimeoutMS)
 	}
-	if cfg.ACSTLSCAFile != "" {
-		t.Fatalf("unexpected ACSTLSCAFile default: %q", cfg.ACSTLSCAFile)
+	if cfg.OutboundTLSCAFile != "" {
+		t.Fatalf("unexpected OutboundTLSCAFile default: %q", cfg.OutboundTLSCAFile)
 	}
-	if cfg.ACSTLSCAPEM != "" {
-		t.Fatalf("unexpected ACSTLSCAPEM default: %q", cfg.ACSTLSCAPEM)
+	if cfg.OutboundTLSCAPEM != "" {
+		t.Fatalf("unexpected OutboundTLSCAPEM default: %q", cfg.OutboundTLSCAPEM)
 	}
 	if cfg.SESRegion != "" || cfg.SESSender != "" || cfg.SESAccessKeyID != "" {
 		t.Fatalf("expected SES defaults to be empty, got region=%q sender=%q key=%q", cfg.SESRegion, cfg.SESSender, cfg.SESAccessKeyID)
@@ -98,8 +98,8 @@ func TestLoadDeliveryTuningFromEnv(t *testing.T) {
 	t.Setenv("DELIVERY_HTTP_MAX_IDLE_CONNS", "300")
 	t.Setenv("DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST", "60")
 	t.Setenv("DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS", "45000")
-	t.Setenv("ACS_TLS_CA_FILE", "/mnt/secrets/proxy-ca.pem")
-	t.Setenv("ACS_TLS_CA_PEM", "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----")
+	t.Setenv("OUTBOUND_TLS_CA_FILE", "/mnt/secrets/proxy-ca.pem")
+	t.Setenv("OUTBOUND_TLS_CA_PEM", "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----")
 
 	cfg, err := Load()
 	if err != nil {
@@ -123,11 +123,11 @@ func TestLoadDeliveryTuningFromEnv(t *testing.T) {
 	if cfg.DeliveryHTTPIdleConnTimeoutMS != 45000 {
 		t.Fatalf("unexpected DeliveryHTTPIdleConnTimeoutMS: %d", cfg.DeliveryHTTPIdleConnTimeoutMS)
 	}
-	if cfg.ACSTLSCAFile != "/mnt/secrets/proxy-ca.pem" {
-		t.Fatalf("unexpected ACSTLSCAFile: %q", cfg.ACSTLSCAFile)
+	if cfg.OutboundTLSCAFile != "/mnt/secrets/proxy-ca.pem" {
+		t.Fatalf("unexpected OutboundTLSCAFile: %q", cfg.OutboundTLSCAFile)
 	}
-	if cfg.ACSTLSCAPEM == "" {
-		t.Fatal("expected ACSTLSCAPEM to be loaded")
+	if cfg.OutboundTLSCAPEM == "" {
+		t.Fatal("expected OutboundTLSCAPEM to be loaded")
 	}
 }
 
@@ -170,13 +170,51 @@ func TestLoadTLSCAPEMFromFile(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	t.Setenv("ACS_TLS_CA_PEM_FILE", path)
+	t.Setenv("OUTBOUND_TLS_CA_PEM_FILE", path)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() returned error: %v", err)
 	}
-	if strings.TrimSpace(cfg.ACSTLSCAPEM) != strings.TrimSpace(content) {
-		t.Fatalf("unexpected ACSTLSCAPEM: %q", cfg.ACSTLSCAPEM)
+	if strings.TrimSpace(cfg.OutboundTLSCAPEM) != strings.TrimSpace(content) {
+		t.Fatalf("unexpected OutboundTLSCAPEM: %q", cfg.OutboundTLSCAPEM)
+	}
+}
+
+func TestLoadOutboundTLSCompatAliases(t *testing.T) {
+	setSecureDefaults(t)
+	setACSDefaults(t)
+	t.Setenv("ACS_TLS_CA_FILE", "/mnt/secrets/legacy-ca.pem")
+	t.Setenv("ACS_TLS_CA_PEM", "-----BEGIN CERTIFICATE-----\nLEGACY\n-----END CERTIFICATE-----")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.OutboundTLSCAFile != "/mnt/secrets/legacy-ca.pem" {
+		t.Fatalf("unexpected OutboundTLSCAFile from alias: %q", cfg.OutboundTLSCAFile)
+	}
+	if cfg.OutboundTLSCAPEM == "" {
+		t.Fatal("expected OutboundTLSCAPEM alias to be loaded")
+	}
+}
+
+func TestLoadOutboundTLSPrefersProviderNeutralEnv(t *testing.T) {
+	setSecureDefaults(t)
+	setACSDefaults(t)
+	t.Setenv("OUTBOUND_TLS_CA_FILE", "/mnt/secrets/outbound-ca.pem")
+	t.Setenv("ACS_TLS_CA_FILE", "/mnt/secrets/legacy-ca.pem")
+	t.Setenv("OUTBOUND_TLS_CA_PEM", "-----BEGIN CERTIFICATE-----\nPRIMARY\n-----END CERTIFICATE-----")
+	t.Setenv("ACS_TLS_CA_PEM", "-----BEGIN CERTIFICATE-----\nLEGACY\n-----END CERTIFICATE-----")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.OutboundTLSCAFile != "/mnt/secrets/outbound-ca.pem" {
+		t.Fatalf("expected provider-neutral CA file to win, got %q", cfg.OutboundTLSCAFile)
+	}
+	if !strings.Contains(cfg.OutboundTLSCAPEM, "PRIMARY") {
+		t.Fatalf("expected provider-neutral PEM to win, got %q", cfg.OutboundTLSCAPEM)
 	}
 }
 

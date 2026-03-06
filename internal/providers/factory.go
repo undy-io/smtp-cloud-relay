@@ -9,7 +9,9 @@ import (
 	"github.com/undy-io/smtp-cloud-relay/internal/config"
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
 	"github.com/undy-io/smtp-cloud-relay/internal/providers/acs"
+	"github.com/undy-io/smtp-cloud-relay/internal/providers/httpclient"
 	"github.com/undy-io/smtp-cloud-relay/internal/providers/noop"
+	"github.com/undy-io/smtp-cloud-relay/internal/providers/ses"
 )
 
 const maxDuration = time.Duration(1<<63 - 1)
@@ -35,25 +37,23 @@ func Build(cfg config.Config, logger *slog.Logger) (Runtime, error) {
 	case "acs":
 		baseDelay := time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond
 		httpTimeout := time.Duration(cfg.DeliveryHTTPTimeoutMS) * time.Millisecond
-		retryTransportBudget := multiplyDuration(httpTimeout, cfg.DeliveryRetryAttempts)
-		retryBackoffBudget := retryBackoffTotal(baseDelay, cfg.DeliveryRetryAttempts)
-		sendTimeout := saturatingAdd(retryTransportBudget, retryBackoffBudget, 2*time.Second)
-		handlerTimeout := saturatingAdd(sendTimeout, 5*time.Second)
+		sendTimeout, handlerTimeout := runtimeBudgets(httpTimeout, baseDelay, cfg.DeliveryRetryAttempts)
+
+		client, err := httpclient.Build(httpclient.Config{
+			Timeout:             httpTimeout,
+			MaxIdleConns:        cfg.DeliveryHTTPMaxIdleConns,
+			MaxIdleConnsPerHost: cfg.DeliveryHTTPMaxIdleConnsPerHost,
+			IdleConnTimeout:     time.Duration(cfg.DeliveryHTTPIdleConnTimeoutMS) * time.Millisecond,
+			TLSCAFile:           cfg.OutboundTLSCAFile,
+			TLSCAPEM:            cfg.OutboundTLSCAPEM,
+		})
+		if err != nil {
+			return Runtime{}, fmt.Errorf("build acs http client: %w", err)
+		}
 
 		opts := []acs.Option{
 			acs.WithRetry(cfg.DeliveryRetryAttempts, baseDelay),
-			acs.WithHTTPTransportConfig(acs.HTTPTransportConfig{
-				Timeout:             httpTimeout,
-				MaxIdleConns:        cfg.DeliveryHTTPMaxIdleConns,
-				MaxIdleConnsPerHost: cfg.DeliveryHTTPMaxIdleConnsPerHost,
-				IdleConnTimeout:     time.Duration(cfg.DeliveryHTTPIdleConnTimeoutMS) * time.Millisecond,
-			}),
-		}
-		if strings.TrimSpace(cfg.ACSTLSCAFile) != "" {
-			opts = append(opts, acs.WithTLSCAFile(cfg.ACSTLSCAFile))
-		}
-		if strings.TrimSpace(cfg.ACSTLSCAPEM) != "" {
-			opts = append(opts, acs.WithTLSCAPEM(cfg.ACSTLSCAPEM))
+			acs.WithHTTPClient(client),
 		}
 
 		p, err := acs.NewProvider(cfg.ACSEndpoint, cfg.ACSConnectionString, cfg.ACSSender, logger, opts...)
@@ -67,10 +67,51 @@ func Build(cfg config.Config, logger *slog.Logger) (Runtime, error) {
 			HandlerTimeout: handlerTimeout,
 		}, nil
 	case "ses":
-		return Runtime{}, fmt.Errorf("DELIVERY_MODE=ses is not implemented yet")
+		baseDelay := time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond
+		httpTimeout := time.Duration(cfg.DeliveryHTTPTimeoutMS) * time.Millisecond
+		sendTimeout, handlerTimeout := runtimeBudgets(httpTimeout, baseDelay, cfg.DeliveryRetryAttempts)
+
+		client, err := httpclient.Build(httpclient.Config{
+			Timeout:             httpTimeout,
+			MaxIdleConns:        cfg.DeliveryHTTPMaxIdleConns,
+			MaxIdleConnsPerHost: cfg.DeliveryHTTPMaxIdleConnsPerHost,
+			IdleConnTimeout:     time.Duration(cfg.DeliveryHTTPIdleConnTimeoutMS) * time.Millisecond,
+			TLSCAFile:           cfg.OutboundTLSCAFile,
+			TLSCAPEM:            cfg.OutboundTLSCAPEM,
+		})
+		if err != nil {
+			return Runtime{}, fmt.Errorf("build ses http client: %w", err)
+		}
+
+		opts := []ses.Option{
+			ses.WithHTTPClient(client),
+			ses.WithRetry(cfg.DeliveryRetryAttempts, baseDelay),
+		}
+		if strings.TrimSpace(cfg.SESAccessKeyID) != "" {
+			opts = append(opts, ses.WithStaticCredentials(cfg.SESAccessKeyID, cfg.SESSecretAccessKey, cfg.SESSessionToken))
+		}
+
+		p, err := ses.NewProvider(cfg.SESRegion, cfg.SESSender, cfg.SESEndpoint, cfg.SESConfigurationSet, logger, opts...)
+		if err != nil {
+			return Runtime{}, err
+		}
+
+		return Runtime{
+			Provider:       p,
+			SendTimeout:    sendTimeout,
+			HandlerTimeout: handlerTimeout,
+		}, nil
 	default:
 		return Runtime{}, fmt.Errorf("unsupported delivery mode %q", cfg.DeliveryMode)
 	}
+}
+
+func runtimeBudgets(httpTimeout, baseDelay time.Duration, attempts int) (time.Duration, time.Duration) {
+	retryTransportBudget := multiplyDuration(httpTimeout, attempts)
+	retryBackoffBudget := retryBackoffTotal(baseDelay, attempts)
+	sendTimeout := saturatingAdd(retryTransportBudget, retryBackoffBudget, 2*time.Second)
+	handlerTimeout := saturatingAdd(sendTimeout, 5*time.Second)
+	return sendTimeout, handlerTimeout
 }
 
 func retryBackoffTotal(base time.Duration, attempts int) time.Duration {

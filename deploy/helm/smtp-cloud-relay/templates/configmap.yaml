@@ -1,3 +1,4 @@
+{{- $outboundTLSCAFile := default .Values.acs.tlsCAFile .Values.outboundTLS.caFile -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -32,8 +33,8 @@ data:
   SES_SENDER: {{ .Values.ses.sender | quote }}
   SES_ENDPOINT: {{ .Values.ses.endpoint | quote }}
   SES_CONFIGURATION_SET: {{ .Values.ses.configurationSet | quote }}
-  {{- if .Values.acs.tlsCAFile }}
-  ACS_TLS_CA_FILE: {{ .Values.acs.tlsCAFile | quote }}
+  {{- if $outboundTLSCAFile }}
+  OUTBOUND_TLS_CA_FILE: {{ $outboundTLSCAFile | quote }}
   {{- else if .Values.extraTrustedCA.enabled }}
-  ACS_TLS_CA_FILE: {{ printf "%s/%s" .Values.extraTrustedCA.mountPath .Values.extraTrustedCA.key | quote }}
+  OUTBOUND_TLS_CA_FILE: {{ printf "%s/%s" .Values.extraTrustedCA.mountPath .Values.extraTrustedCA.key | quote }}
   {{- end }}

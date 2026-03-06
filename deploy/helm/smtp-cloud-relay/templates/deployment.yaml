@@ -1,3 +1,4 @@
+{{- $outboundTLSCAPEMKey := default .Values.secrets.keys.acsTLSCAPEM .Values.secrets.keys.outboundTLSCAPEM -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -80,11 +81,11 @@ spec:
                   name: {{ include "smtp-cloud-relay.secretName" . }}
                   key: {{ .Values.secrets.keys.smtpAuthPassword }}
                   optional: false
-            - name: ACS_TLS_CA_PEM
+            - name: OUTBOUND_TLS_CA_PEM
               valueFrom:
                 secretKeyRef:
                   name: {{ include "smtp-cloud-relay.secretName" . }}
-                  key: {{ .Values.secrets.keys.acsTLSCAPEM }}
+                  key: {{ $outboundTLSCAPEMKey }}
                   optional: true
             {{- if .Values.proxy.httpProxy }}
             - name: HTTP_PROXY

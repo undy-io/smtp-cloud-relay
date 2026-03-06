@@ -53,8 +53,8 @@ type Config struct {
 	ACSEndpoint         string
 	ACSConnectionString string
 	ACSSender           string
-	ACSTLSCAFile        string
-	ACSTLSCAPEM         string
+	OutboundTLSCAFile   string
+	OutboundTLSCAPEM    string
 
 	SESRegion           string
 	SESSender           string
@@ -196,11 +196,11 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.ACSTLSCAFile, err = envOrFile("ACS_TLS_CA_FILE")
+	cfg.OutboundTLSCAFile, err = envOrFileCompat("OUTBOUND_TLS_CA_FILE", "ACS_TLS_CA_FILE")
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.ACSTLSCAPEM, err = envOrFile("ACS_TLS_CA_PEM")
+	cfg.OutboundTLSCAPEM, err = envOrFileCompat("OUTBOUND_TLS_CA_PEM", "ACS_TLS_CA_PEM")
 	if err != nil {
 		return Config{}, err
 	}
@@ -370,6 +370,20 @@ func envOrFile(key string) (string, error) {
 		return strings.TrimSpace(string(b)), nil
 	}
 
+	return "", nil
+}
+
+func envOrFileCompat(primary string, aliases ...string) (string, error) {
+	keys := append([]string{primary}, aliases...)
+	for _, key := range keys {
+		val, err := envOrFile(key)
+		if err != nil {
+			return "", err
+		}
+		if val != "" {
+			return val, nil
+		}
+	}
 	return "", nil
 }
 

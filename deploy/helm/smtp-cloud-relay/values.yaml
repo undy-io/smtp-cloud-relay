@@ -73,7 +73,10 @@ http:
 
 acs:
   endpoint: ""
-  tlsCAFile: ""
+  tlsCAFile: "" # deprecated alias for outboundTLS.caFile
+
+outboundTLS:
+  caFile: ""
 
 ses:
   region: ""
@@ -91,7 +94,8 @@ secrets:
   sesSessionToken: ""
   smtpAuthUsername: ""
   smtpAuthPassword: ""
-  acsTLSCAPEM: ""
+  outboundTLSCAPEM: ""
+  acsTLSCAPEM: "" # deprecated alias for outboundTLSCAPEM
   keys:
     acsConnectionString: ACS_CONNECTION_STRING
     acsSender: ACS_SENDER
@@ -100,7 +104,8 @@ secrets:
     sesSessionToken: SES_SESSION_TOKEN
     smtpAuthUsername: SMTP_AUTH_USERNAME
     smtpAuthPassword: SMTP_AUTH_PASSWORD
-    acsTLSCAPEM: ACS_TLS_CA_PEM
+    outboundTLSCAPEM: OUTBOUND_TLS_CA_PEM
+    acsTLSCAPEM: ACS_TLS_CA_PEM # deprecated alias for outboundTLSCAPEM
 
 tls:
   certFile: /etc/smtp-tls/tls.crt

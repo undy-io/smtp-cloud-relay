@@ -6,7 +6,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/providers/httpclient"
 )
 
 const (
@@ -562,40 +562,11 @@ func appendExtraCAPEM(p *Provider, pemBytes []byte) error {
 }
 
 func (p *Provider) buildHTTPClient() (*http.Client, error) {
-	baseTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return nil, fmt.Errorf("default transport is not *http.Transport")
-	}
-
-	transport := baseTransport.Clone()
-	transport.Proxy = http.ProxyFromEnvironment
-
-	transport.MaxIdleConns = p.transportConfig.MaxIdleConns
-	transport.MaxIdleConnsPerHost = p.transportConfig.MaxIdleConnsPerHost
-	transport.IdleConnTimeout = p.transportConfig.IdleConnTimeout
-
-	if len(p.extraCAPEMs) > 0 {
-		roots, err := x509.SystemCertPool()
-		if err != nil || roots == nil {
-			roots = x509.NewCertPool()
-		}
-
-		for _, pemBytes := range p.extraCAPEMs {
-			if !roots.AppendCertsFromPEM(pemBytes) {
-				return nil, fmt.Errorf("failed to append tls ca certificates")
-			}
-		}
-
-		if transport.TLSClientConfig == nil {
-			transport.TLSClientConfig = &tls.Config{}
-		} else {
-			transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-		}
-		transport.TLSClientConfig.RootCAs = roots
-	}
-
-	return &http.Client{
-		Timeout:   p.transportConfig.Timeout,
-		Transport: transport,
-	}, nil
+	return httpclient.Build(httpclient.Config{
+		Timeout:             p.transportConfig.Timeout,
+		MaxIdleConns:        p.transportConfig.MaxIdleConns,
+		MaxIdleConnsPerHost: p.transportConfig.MaxIdleConnsPerHost,
+		IdleConnTimeout:     p.transportConfig.IdleConnTimeout,
+		TLSCAPEM:            string(bytes.Join(p.extraCAPEMs, []byte("\n"))),
+	})
 }

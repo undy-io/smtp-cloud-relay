@@ -1,6 +1,6 @@
 # smtp-cloud-relay
 
-`smtp-cloud-relay` accepts SMTP mail from local applications (for example Jira/Confluence), parses MIME content, and relays messages to Azure Communication Services Email API.
+`smtp-cloud-relay` accepts SMTP mail from local applications (for example Jira/Confluence), parses MIME content, and relays messages to Azure Communication Services Email API or AWS SES v2.
 
 ## What It Does
 
@@ -8,7 +8,7 @@
 - MIME parsing for sender, recipients, subject, text/html, attachments
 - Delivery modes:
   - `acs` (default): forwards to ACS Email REST API
-  - `ses` (prewired): reserved for future AWS SES v2 support; startup currently fails fast
+  - `ses`: forwards to AWS SES v2
   - `noop`: accepts/logs only (dev mode)
 - Security controls to avoid open relay posture:
   - CIDR allowlist
@@ -64,7 +64,7 @@ These settings are provider-agnostic and replace legacy ACS-specific tuning env 
 - `ACS_CONNECTION_STRING` (required in `acs` mode)
 - `ACS_SENDER` (required in `acs` mode)
 
-### SES Delivery (Placeholder)
+### SES Delivery
 
 - `SES_REGION` (required in `ses` mode)
 - `SES_SENDER` (required in `ses` mode)
@@ -74,12 +74,17 @@ These settings are provider-agnostic and replace legacy ACS-specific tuning env 
 - `SES_SECRET_ACCESS_KEY` (optional; must pair with `SES_ACCESS_KEY_ID`)
 - `SES_SESSION_TOKEN` (optional; requires both static key fields)
 
-### ACS TLS / Proxy Trust
+### Outbound TLS / Proxy Trust
 
-- `ACS_TLS_CA_FILE` (optional path to extra CA bundle)
-- `ACS_TLS_CA_PEM` (optional inline PEM)
+- `OUTBOUND_TLS_CA_FILE` (optional path to extra CA bundle; applies to ACS and SES)
+- `OUTBOUND_TLS_CA_PEM` (optional inline PEM; applies to ACS and SES)
 
-Proxy environment variables are supported for outbound ACS traffic:
+Compatibility aliases still supported:
+
+- `ACS_TLS_CA_FILE`
+- `ACS_TLS_CA_PEM`
+
+Proxy environment variables are supported for outbound provider traffic:
 
 - `HTTPS_PROXY`
 - `HTTP_PROXY`
