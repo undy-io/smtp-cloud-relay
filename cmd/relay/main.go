@@ -131,19 +131,80 @@ func buildMessageHandler(cfg config.Config, logger *slog.Logger) (smtprelay.Mess
 		return nil, 0, err
 	}
 
+	senderPolicy, err := buildSenderPolicy(cfg)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	handlerTimeout := deliveryRuntime.HandlerTimeout
-	return newDirectSendMessageHandler(cfg, logger, deliveryRuntime.Provider.Send, deliveryRuntime.SendTimeout), handlerTimeout, nil
+	return newDirectSendMessageHandler(cfg, logger, senderPolicy, deliveryRuntime.Provider.Send, deliveryRuntime.SendTimeout), handlerTimeout, nil
 }
 
-func newDirectSendMessageHandler(cfg config.Config, logger *slog.Logger, sendFunc func(context.Context, email.Message) error, sendTimeout time.Duration) smtprelay.MessageHandler {
+func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
+	return email.NewSenderPolicy(email.SenderPolicyOptions{
+		Mode:                  email.SenderPolicyMode(cfg.SenderPolicyMode),
+		AllowedDomainPatterns: cfg.SenderAllowedDomains,
+		VerifiedSender:        verifiedSenderForMode(cfg),
+	})
+}
+
+func verifiedSenderForMode(cfg config.Config) string {
+	switch cfg.DeliveryMode {
+	case "acs":
+		return cfg.ACSSender
+	case "ses":
+		return cfg.SESSender
+	default:
+		return ""
+	}
+}
+
+func newDirectSendMessageHandler(cfg config.Config, logger *slog.Logger, senderPolicy email.SenderPolicy, sendFunc func(context.Context, email.Message) error, sendTimeout time.Duration) smtprelay.MessageHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	inflight := make(chan struct{}, cfg.SMTPMaxInflightSends)
 	relayBusyError := &gosmtp.SMTPError{Code: 451, EnhancedCode: gosmtp.EnhancedCode{4, 3, 2}, Message: "relay busy, try again later"}
+	senderPolicyRejectedError := &gosmtp.SMTPError{Code: 554, EnhancedCode: gosmtp.EnhancedCode{5, 7, 1}, Message: "sender rejected by relay policy"}
 
 	return smtprelay.MessageHandlerFunc(func(ctx context.Context, msg email.Message) error {
+		policyResult, err := email.ApplySenderPolicy(msg, senderPolicy)
+		if err != nil {
+			if policyErr, ok := email.AsSenderPolicyError(err); ok {
+				logger.Warn("smtp sender rejected by policy",
+					"sender_policy_mode", cfg.SenderPolicyMode,
+					"sender_policy_reason", policyErr.Reason,
+					"envelope_from", msg.EnvelopeFrom,
+					"header_from", msg.HeaderFrom,
+					"original_sender", policyResult.OriginalSender,
+					"effective_reply_to_count", len(policyResult.EffectiveReplyTo),
+				)
+				return senderPolicyRejectedError
+			}
+
+			logger.Error("failed to apply sender policy",
+				"sender_policy_mode", cfg.SenderPolicyMode,
+				"envelope_from", msg.EnvelopeFrom,
+				"header_from", msg.HeaderFrom,
+				"error", err,
+			)
+			return smtprelay.MapDeliveryError(err)
+		}
+
+		if policyResult.DecisionReason != "" {
+			logger.Info("smtp sender policy dropped original sender intent",
+				"sender_policy_mode", cfg.SenderPolicyMode,
+				"sender_policy_reason", policyResult.DecisionReason,
+				"envelope_from", msg.EnvelopeFrom,
+				"header_from", msg.HeaderFrom,
+				"original_sender", policyResult.OriginalSender,
+				"effective_reply_to_count", len(policyResult.EffectiveReplyTo),
+			)
+		}
+
+		msg = policyResult.Message
+
 		select {
 		case inflight <- struct{}{}:
 			defer func() { <-inflight }()
@@ -162,10 +223,17 @@ func newDirectSendMessageHandler(cfg config.Config, logger *slog.Logger, sendFun
 		if err := sendFunc(sendCtx, msg); err != nil {
 			logArgs := []any{
 				"mode", cfg.DeliveryMode,
-				"from", msg.From,
+				"sender_policy_mode", cfg.SenderPolicyMode,
+				"envelope_from", msg.EnvelopeFrom,
+				"header_from", msg.HeaderFrom,
+				"original_sender", policyResult.OriginalSender,
+				"effective_reply_to_count", len(msg.ReplyTo),
 				"to_count", len(msg.To),
 				"subject", msg.Subject,
 				"error", err,
+			}
+			if policyResult.DecisionReason != "" {
+				logArgs = append(logArgs, "sender_policy_reason", policyResult.DecisionReason)
 			}
 			if deliveryErr, ok := email.AsDeliveryError(err); ok {
 				logArgs = append(logArgs,

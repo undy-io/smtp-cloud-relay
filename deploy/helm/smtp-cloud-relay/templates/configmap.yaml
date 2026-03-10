@@ -18,6 +18,8 @@ data:
   SMTP_TLS_CERT_FILE: {{ .Values.tls.certFile | quote }}
   SMTP_TLS_KEY_FILE: {{ .Values.tls.keyFile | quote }}
   SMTP_MAX_INFLIGHT_SENDS: {{ .Values.smtp.maxInflightSends | quote }}
+  SENDER_POLICY_MODE: {{ .Values.senderPolicy.mode | quote }}
+  SENDER_ALLOWED_DOMAINS: {{ join "," .Values.senderPolicy.allowedDomains | quote }}
 
   HTTP_LISTEN_ADDR: {{ .Values.http.listenAddr | quote }}
 

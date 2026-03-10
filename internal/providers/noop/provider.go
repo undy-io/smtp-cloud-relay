@@ -20,7 +20,8 @@ func NewProvider(logger *slog.Logger) *Provider {
 
 func (p *Provider) Send(_ context.Context, msg email.Message) error {
 	p.logger.Info("noop delivery accepted",
-		"from", msg.From,
+		"envelope_from", msg.EnvelopeFrom,
+		"header_from", msg.HeaderFrom,
 		"to", msg.To,
 		"subject", msg.Subject,
 		"attachments", len(msg.Attachments),

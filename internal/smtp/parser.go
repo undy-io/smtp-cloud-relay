@@ -21,27 +21,11 @@ func ParseMessage(r io.Reader, envelopeFrom string, envelopeTo []string) (email.
 	}
 
 	result := email.Message{
-		From:    strings.TrimSpace(envelopeFrom),
-		To:      normalizeAddresses(envelopeTo),
-		Subject: decodeHeader(msg.Header.Get("Subject")),
-	}
-
-	if from := strings.TrimSpace(msg.Header.Get("From")); from != "" {
-		if addr, err := mail.ParseAddress(from); err == nil {
-			result.From = addr.Address
-		} else {
-			result.From = decodeHeader(from)
-		}
-	}
-
-	if len(result.To) == 0 {
-		toHeader := strings.TrimSpace(msg.Header.Get("To"))
-		if addrs, err := mail.ParseAddressList(toHeader); err == nil && len(addrs) > 0 {
-			result.To = make([]string, 0, len(addrs))
-			for _, a := range addrs {
-				result.To = append(result.To, a.Address)
-			}
-		}
+		EnvelopeFrom: strings.TrimSpace(envelopeFrom),
+		HeaderFrom:   parseHeaderAddress(msg.Header.Get("From")),
+		ReplyTo:      parseHeaderAddressList(msg.Header.Get("Reply-To")),
+		To:           normalizeAddresses(envelopeTo),
+		Subject:      decodeHeader(msg.Header.Get("Subject")),
 	}
 
 	contentType := msg.Header.Get("Content-Type")
@@ -185,6 +169,44 @@ func normalizeAddresses(values []string) []string {
 		if trimmed != "" {
 			out = append(out, trimmed)
 		}
+	}
+	return out
+}
+
+func parseHeaderAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	addr, err := mail.ParseAddress(value)
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(addr.Address)
+}
+
+func parseHeaderAddressList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+
+	addrs, err := mail.ParseAddressList(value)
+	if err != nil {
+		return nil
+	}
+
+	out := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		normalized := strings.TrimSpace(addr.Address)
+		if normalized != "" {
+			out = append(out, normalized)
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

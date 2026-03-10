@@ -332,7 +332,7 @@ func buildRawMessage(sender string, msg email.Message) ([]byte, []string, []stri
 		return nil, nil, nil, fmt.Errorf("message has no valid recipients")
 	}
 
-	replyTo := buildReplyTo(msg.From)
+	replyTo := normalizeReplyTo(msg.ReplyTo)
 
 	plain := msg.TextBody
 	html := msg.HTMLBody
@@ -376,19 +376,25 @@ func normalizeRecipients(recipients []string) []string {
 	return out
 }
 
-func buildReplyTo(from string) []string {
-	from = strings.TrimSpace(from)
-	if from == "" {
-		return nil
+func normalizeReplyTo(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+
+		addr, err := mail.ParseAddress(value)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(addr.Address) == "" {
+			continue
+		}
+
+		out = append(out, addr.Address)
 	}
-	addr, err := mail.ParseAddress(from)
-	if err != nil {
-		return nil
-	}
-	if strings.TrimSpace(addr.Address) == "" {
-		return nil
-	}
-	return []string{addr.Address}
+	return out
 }
 
 func buildMIMEBody(plain, html string, attachments []email.Attachment) (string, []byte, error) {

@@ -503,7 +503,8 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	s.logger.Info("smtp message received",
-		"from", msg.From,
+		"envelope_from", msg.EnvelopeFrom,
+		"header_from", msg.HeaderFrom,
 		"to", msg.To,
 		"subject", msg.Subject,
 		"attachments", len(msg.Attachments),

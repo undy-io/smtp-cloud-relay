@@ -304,7 +304,7 @@ func TestServerStartTLSAndAuthPlainFlow(t *testing.T) {
 		t.Fatalf("auth response: %v", err)
 	}
 
-	tp.PrintfLine("MAIL FROM:<from@example.com>")
+	tp.PrintfLine("MAIL FROM:<envelope@example.com>")
 	if _, _, err := tp.ReadResponse(250); err != nil {
 		t.Fatalf("mail response: %v", err)
 	}
@@ -318,7 +318,8 @@ func TestServerStartTLSAndAuthPlainFlow(t *testing.T) {
 	}
 
 	tp.PrintfLine("Subject: Integration test")
-	tp.PrintfLine("From: from@example.com")
+	tp.PrintfLine("From: header@example.com")
+	tp.PrintfLine("Reply-To: reply@example.com")
 	tp.PrintfLine("To: to@example.com")
 	tp.PrintfLine("")
 	tp.PrintfLine("hello relay")
@@ -332,8 +333,14 @@ func TestServerStartTLSAndAuthPlainFlow(t *testing.T) {
 		if msg.Subject != "Integration test" {
 			t.Fatalf("unexpected subject: %q", msg.Subject)
 		}
-		if msg.From != "from@example.com" {
-			t.Fatalf("unexpected from: %q", msg.From)
+		if msg.EnvelopeFrom != "envelope@example.com" {
+			t.Fatalf("unexpected envelope from: %q", msg.EnvelopeFrom)
+		}
+		if msg.HeaderFrom != "header@example.com" {
+			t.Fatalf("unexpected header from: %q", msg.HeaderFrom)
+		}
+		if len(msg.ReplyTo) != 1 || msg.ReplyTo[0] != "reply@example.com" {
+			t.Fatalf("unexpected reply-to: %#v", msg.ReplyTo)
 		}
 		if len(msg.To) != 1 || msg.To[0] != "to@example.com" {
 			t.Fatalf("unexpected to: %#v", msg.To)

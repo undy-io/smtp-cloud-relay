@@ -28,9 +28,10 @@ func TestNewDirectSendMessageHandlerMapsDeliveryErrors(t *testing.T) {
 	t.Parallel()
 
 	msg := email.Message{
-		From:    "from@example.com",
-		To:      []string{"to@example.com"},
-		Subject: "subject",
+		EnvelopeFrom: "envelope@example.com",
+		HeaderFrom:   "header@example.com",
+		To:           []string{"to@example.com"},
+		Subject:      "subject",
 	}
 
 	tests := []struct {
@@ -66,7 +67,10 @@ func TestNewDirectSendMessageHandlerMapsDeliveryErrors(t *testing.T) {
 			handler := newDirectSendMessageHandler(config.Config{
 				DeliveryMode:         "test",
 				SMTPMaxInflightSends: 1,
-			}, testMainLogger(), func(context.Context, email.Message) error {
+				SenderPolicyMode:     "rewrite",
+			}, testMainLogger(), mustTestSenderPolicy(t, email.SenderPolicyOptions{
+				Mode: email.SenderPolicyRewrite,
+			}), func(context.Context, email.Message) error {
 				return tt.sendErr
 			}, time.Second)
 
@@ -94,7 +98,10 @@ func TestNewDirectSendMessageHandlerInflightSaturation(t *testing.T) {
 	handler := newDirectSendMessageHandler(config.Config{
 		DeliveryMode:         "test",
 		SMTPMaxInflightSends: 1,
-	}, testMainLogger(), func(context.Context, email.Message) error {
+		SenderPolicyMode:     "rewrite",
+	}, testMainLogger(), mustTestSenderPolicy(t, email.SenderPolicyOptions{
+		Mode: email.SenderPolicyRewrite,
+	}), func(context.Context, email.Message) error {
 		close(sendStarted)
 		<-blockSend
 		return nil
@@ -103,8 +110,8 @@ func TestNewDirectSendMessageHandlerInflightSaturation(t *testing.T) {
 	firstErrCh := make(chan error, 1)
 	go func() {
 		firstErrCh <- handler.HandleMessage(context.Background(), email.Message{
-			From: "from@example.com",
-			To:   []string{"to@example.com"},
+			EnvelopeFrom: "from@example.com",
+			To:           []string{"to@example.com"},
 		})
 	}()
 
@@ -115,8 +122,8 @@ func TestNewDirectSendMessageHandlerInflightSaturation(t *testing.T) {
 	}
 
 	err := handler.HandleMessage(context.Background(), email.Message{
-		From: "from@example.com",
-		To:   []string{"to@example.com"},
+		EnvelopeFrom: "from@example.com",
+		To:           []string{"to@example.com"},
 	})
 	var smtpErr *gosmtp.SMTPError
 	if !errors.As(err, &smtpErr) {
@@ -141,6 +148,120 @@ func TestNewDirectSendMessageHandlerInflightSaturation(t *testing.T) {
 	}
 }
 
+func TestNewDirectSendMessageHandlerStrictPolicyRejectsBeforeSend(t *testing.T) {
+	t.Parallel()
+
+	sendCalled := false
+	handler := newDirectSendMessageHandler(config.Config{
+		DeliveryMode:         "test",
+		SMTPMaxInflightSends: 1,
+		SenderPolicyMode:     "strict",
+	}, testMainLogger(), mustTestSenderPolicy(t, email.SenderPolicyOptions{
+		Mode:                  email.SenderPolicyStrict,
+		AllowedDomainPatterns: []string{"allowed.example.com"},
+	}), func(context.Context, email.Message) error {
+		sendCalled = true
+		return nil
+	}, time.Second)
+
+	err := handler.HandleMessage(context.Background(), email.Message{
+		EnvelopeFrom: "envelope@example.com",
+		HeaderFrom:   "sender@blocked.example.com",
+		To:           []string{"to@example.com"},
+	})
+	var smtpErr *gosmtp.SMTPError
+	if !errors.As(err, &smtpErr) {
+		t.Fatalf("expected *gosmtp.SMTPError, got %T", err)
+	}
+	if smtpErr.Code != 554 {
+		t.Fatalf("unexpected SMTP code: got %d want 554", smtpErr.Code)
+	}
+	if smtpErr.EnhancedCode != (gosmtp.EnhancedCode{5, 7, 1}) {
+		t.Fatalf("unexpected enhanced code: got %v want %v", smtpErr.EnhancedCode, gosmtp.EnhancedCode{5, 7, 1})
+	}
+	if sendCalled {
+		t.Fatal("expected sendFunc not to be called")
+	}
+}
+
+func TestNewDirectSendMessageHandlerRewritePassesEffectiveReplyToOnly(t *testing.T) {
+	t.Parallel()
+
+	var sent email.Message
+	handler := newDirectSendMessageHandler(config.Config{
+		DeliveryMode:         "test",
+		SMTPMaxInflightSends: 1,
+		SenderPolicyMode:     "rewrite",
+	}, testMainLogger(), mustTestSenderPolicy(t, email.SenderPolicyOptions{
+		Mode:                  email.SenderPolicyRewrite,
+		AllowedDomainPatterns: []string{"allowed.example.com"},
+	}), func(_ context.Context, msg email.Message) error {
+		sent = msg
+		return nil
+	}, time.Second)
+
+	err := handler.HandleMessage(context.Background(), email.Message{
+		EnvelopeFrom: "envelope@example.com",
+		HeaderFrom:   "header@example.com",
+		ReplyTo: []string{
+			"reply@allowed.example.com",
+			"other@allowed.example.com",
+		},
+		To: []string{"to@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected handler error: %v", err)
+	}
+	if len(sent.ReplyTo) != 1 || sent.ReplyTo[0] != "reply@allowed.example.com" {
+		t.Fatalf("unexpected sent reply-to: %#v", sent.ReplyTo)
+	}
+	if sent.HeaderFrom != "header@example.com" {
+		t.Fatalf("unexpected sent header from: %q", sent.HeaderFrom)
+	}
+}
+
+func TestBuildMessageHandlerRejectsInvalidSenderPolicyRegex(t *testing.T) {
+	t.Parallel()
+
+	handlerCfg := config.Config{
+		DeliveryMode:         "noop",
+		SMTPMaxInflightSends: 1,
+		SenderPolicyMode:     "rewrite",
+		SenderAllowedDomains: []string{"re:("},
+	}
+
+	_, _, err := buildMessageHandler(handlerCfg, testMainLogger())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestBuildMessageHandlerRejectsInvalidSenderPolicyGlob(t *testing.T) {
+	t.Parallel()
+
+	handlerCfg := config.Config{
+		DeliveryMode:         "noop",
+		SMTPMaxInflightSends: 1,
+		SenderPolicyMode:     "rewrite",
+		SenderAllowedDomains: []string{"glob:*.*.example.com"},
+	}
+
+	_, _, err := buildMessageHandler(handlerCfg, testMainLogger())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
 func testMainLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func mustTestSenderPolicy(t *testing.T, opts email.SenderPolicyOptions) email.SenderPolicy {
+	t.Helper()
+
+	policy, err := email.NewSenderPolicy(opts)
+	if err != nil {
+		t.Fatalf("NewSenderPolicy() error: %v", err)
+	}
+	return policy
 }

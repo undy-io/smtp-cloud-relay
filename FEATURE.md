@@ -300,7 +300,7 @@ Use this format when adding or revising tasks:
 ## Sender Policy
 
 ### SENDER-001 — Make Sender Data Explicit In The Email Model
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On: CORE-004
 - Goal: remove ambiguity between SMTP envelope sender and message-header sender.
@@ -332,7 +332,7 @@ Use this format when adding or revising tasks:
   - `Message.To` remains envelope recipients, not header recipients.
 
 ### SENDER-002 — Add Sender Policy Config And Normalizer
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On: SENDER-001
 - Goal: implement deterministic sender handling before the message is accepted into the relay.
@@ -343,6 +343,10 @@ Use this format when adding or revising tasks:
   - `internal/config/config.go`
   - `internal/config/config_test.go`
   - `cmd/relay/main.go`
+  - `internal/providers/acs/provider.go`
+  - `internal/providers/acs/provider_test.go`
+  - `internal/providers/ses/provider.go`
+  - `internal/providers/ses/provider_test.go`
 - Remove: none
 - Symbols:
   - `Config.SenderPolicyMode`
@@ -354,19 +358,48 @@ Use this format when adding or revising tasks:
   - add env var `SENDER_ALLOWED_DOMAINS` as a comma/space/newline-separated list
   - in `rewrite` mode:
     - the relay always uses the configured provider sender as the outbound visible sender
-    - `Reply-To` is set only when the original sender is syntactically valid and allowed
+    - `Reply-To` is forwarded to providers only when the original sender is syntactically valid and allowed
     - invalid or disallowed original sender does not reject the message, but reply-to is dropped
   - in `strict` mode:
     - invalid or disallowed original sender causes permanent rejection before enqueue
 - Implementation Notes:
-  - Domain matching should be case-insensitive.
+  - Domain matching should be case-insensitive and operate on the sender domain only.
   - If `SENDER_ALLOWED_DOMAINS` is empty, treat it as "allow any syntactically valid domain".
   - Policy selection should use this deterministic order:
     - first valid address from `ReplyTo`, if present
     - otherwise `HeaderFrom`
     - otherwise no original sender candidate
+  - Do not fall back from a present `ReplyTo[0]` to `HeaderFrom` if the chosen reply-to is disallowed.
   - In `strict` mode, no original sender candidate means reject permanently.
-  - Keep the policy function pure and testable; `cmd/relay/main.go` should only wire config into it.
+  - Keep the policy function pure and testable; `cmd/relay/main.go` should only wire config into it and map strict rejections to a permanent SMTP policy error.
+  - Providers must consume the effective `Message.ReplyTo` produced by relay policy and must not infer reply-to from `HeaderFrom`.
+
+### SENDER-002A — Add Explicit Wildcard Support Alongside Regex Matchers
+- Status: done
+- Priority: P1
+- Depends On: SENDER-002
+- Goal: make `SENDER_ALLOWED_DOMAINS` easier to review by supporting exact and wildcard entries without forcing regex for simple cases.
+- Create: none
+- Touch:
+  - `internal/email/sender_policy.go`
+  - `internal/email/sender_policy_test.go`
+  - `internal/config/config_test.go`
+  - `README.md`
+  - `deploy/helm/smtp-cloud-relay/values.yaml`
+- Remove:
+  - the old implicit "every entry is a regex" contract
+- Symbols:
+  - `NewSenderPolicy`
+  - `SenderPolicyResult`
+- Acceptance:
+  - bare entries are exact domain matches, case-insensitive
+  - `glob:*.example.com` matches exactly one subdomain label
+  - `re:` entries remain supported for full-domain regex matching
+  - malformed `glob:` and `re:` entries fail startup
+- Implementation Notes:
+  - Matching is against the sender domain only, never the full address.
+  - `glob:` is intentionally limited; deeper or more flexible matching should use `re:`.
+  - Sender-policy results carry an explicit decision reason so relay logs do not have to reconstruct why a reply-to was dropped.
 
 ### SENDER-003 — Extend Provider Payloads For Reply-To And Trace Headers
 - Status: planned
@@ -381,23 +414,20 @@ Use this format when adding or revising tasks:
   - `internal/providers/ses/provider_test.go`
 - Remove: none
 - Symbols:
-  - add `sendRequest.ReplyTo`
   - add `sendRequest.Headers`
 - Acceptance:
-  - ACS JSON includes `replyTo` when sender policy allows it
   - ACS JSON includes trace headers:
     - `X-SMTP-Relay-Envelope-From`
     - `X-SMTP-Relay-Header-From`
   - SES raw MIME includes:
-    - `Reply-To` when sender policy allows it
     - `X-SMTP-Relay-Envelope-From`
     - `X-SMTP-Relay-Header-From`
   - tests verify the payload shape and header contents
 - Implementation Notes:
   - ACS `headers` is an object map, not a list.
-  - ACS `replyTo` is an array of email-address objects.
   - The visible outbound sender must always remain the configured verified sender for the selected provider.
-  - Trace headers should be included even when `replyTo` is empty, unless the value is unavailable.
+  - Trace headers should be included even when `Message.ReplyTo` is empty, unless the value is unavailable.
+  - Reuse the effective `Message.ReplyTo` computed by `SENDER-002`; do not rerun sender selection or domain matching inside providers.
   - For SES, use the existing raw MIME builder and add the headers directly into the MIME message rather than inventing a provider-specific side channel.
 
 ## Durable Spool + Idempotency

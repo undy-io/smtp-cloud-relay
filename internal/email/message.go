@@ -9,10 +9,12 @@ type Attachment struct {
 
 // Message is the provider-agnostic email model.
 type Message struct {
-	From        string
-	To          []string
-	Subject     string
-	TextBody    string
-	HTMLBody    string
-	Attachments []Attachment
+	EnvelopeFrom string
+	HeaderFrom   string
+	ReplyTo      []string
+	To           []string
+	Subject      string
+	TextBody     string
+	HTMLBody     string
+	Attachments  []Attachment
 }

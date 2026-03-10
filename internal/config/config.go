@@ -24,6 +24,7 @@ const (
 	defaultDeliveryHTTPMaxIdleConns        = 200
 	defaultDeliveryHTTPMaxIdleConnsPerHost = 50
 	defaultDeliveryHTTPIdleConnTimeoutMS   = 90000
+	defaultSenderPolicyMode                = "rewrite"
 )
 
 // Config is runtime configuration loaded from env vars and/or mounted secret files.
@@ -42,6 +43,8 @@ type Config struct {
 	SMTPTLSCertFile      string
 	SMTPTLSKeyFile       string
 	SMTPMaxInflightSends int
+	SenderPolicyMode     string
+	SenderAllowedDomains []string
 
 	DeliveryRetryAttempts           int
 	DeliveryRetryBaseDelayMS        int
@@ -77,6 +80,7 @@ func Load() (Config, error) {
 		SMTPStartTLSEnabled:             defaultSMTPStartTLSEnabled,
 		SMTPRequireTLS:                  defaultSMTPRequireTLS,
 		SMTPMaxInflightSends:            defaultSMTPMaxInflightSends,
+		SenderPolicyMode:                defaultSenderPolicyMode,
 		DeliveryRetryAttempts:           defaultDeliveryRetryAttempts,
 		DeliveryRetryBaseDelayMS:        defaultDeliveryRetryBaseDelayMS,
 		DeliveryHTTPTimeoutMS:           defaultDeliveryHTTPTimeoutMS,
@@ -155,6 +159,15 @@ func Load() (Config, error) {
 	}
 
 	cfg.SMTPMaxInflightSends, err = envOrFileInt("SMTP_MAX_INFLIGHT_SENDS", defaultSMTPMaxInflightSends)
+	if err != nil {
+		return Config{}, err
+	}
+	if v, err := envOrFile("SENDER_POLICY_MODE"); err != nil {
+		return Config{}, err
+	} else if v != "" {
+		cfg.SenderPolicyMode = strings.ToLower(strings.TrimSpace(v))
+	}
+	cfg.SenderAllowedDomains, err = envOrFileList("SENDER_ALLOWED_DOMAINS")
 	if err != nil {
 		return Config{}, err
 	}
@@ -307,6 +320,11 @@ func (c Config) Validate() error {
 
 	if c.SMTPMaxInflightSends < 1 {
 		return fmt.Errorf("SMTP_MAX_INFLIGHT_SENDS must be >= 1")
+	}
+	switch strings.TrimSpace(c.SenderPolicyMode) {
+	case "rewrite", "strict":
+	default:
+		return fmt.Errorf("SENDER_POLICY_MODE must be one of: rewrite, strict")
 	}
 	if c.DeliveryRetryAttempts < 1 {
 		return fmt.Errorf("DELIVERY_RETRY_ATTEMPTS must be >= 1")

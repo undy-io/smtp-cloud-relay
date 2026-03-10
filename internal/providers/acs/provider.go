@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"strings"
@@ -140,6 +141,7 @@ type sendRequest struct {
 	SenderAddress string          `json:"senderAddress"`
 	Recipients    recipients      `json:"recipients"`
 	Content       content         `json:"content"`
+	ReplyTo       []recipient     `json:"replyTo,omitempty"`
 	Attachments   []attachmentDTO `json:"attachments,omitempty"`
 }
 
@@ -393,6 +395,11 @@ func buildSendRequest(sender string, msg email.Message) (sendRequest, error) {
 		body.Content.PlainText = "(empty message)"
 	}
 
+	replyToRecipients := normalizeReplyToRecipients(msg.ReplyTo)
+	if len(replyToRecipients) > 0 {
+		body.ReplyTo = replyToRecipients
+	}
+
 	if len(msg.Attachments) > 0 {
 		body.Attachments = make([]attachmentDTO, 0, len(msg.Attachments))
 		for i, a := range msg.Attachments {
@@ -414,6 +421,27 @@ func buildSendRequest(sender string, msg email.Message) (sendRequest, error) {
 	}
 
 	return body, nil
+}
+
+func normalizeReplyToRecipients(addresses []string) []recipient {
+	out := make([]recipient, 0, len(addresses))
+	for _, raw := range addresses {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+
+		addr, err := mail.ParseAddress(raw)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(addr.Address) == "" {
+			continue
+		}
+
+		out = append(out, recipient{Address: addr.Address})
+	}
+	return out
 }
 
 func (p *Provider) sendOnce(ctx context.Context, requestID string, attempt int, body []byte) *SendError {

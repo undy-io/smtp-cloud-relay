@@ -64,6 +64,27 @@ These settings are provider-agnostic and replace legacy ACS-specific tuning env 
 
 - `SMTP_MAX_INFLIGHT_SENDS` (default `200`)
 
+### Sender Policy
+
+- `SENDER_POLICY_MODE` (`rewrite` or `strict`, default `rewrite`)
+- `SENDER_ALLOWED_DOMAINS` (optional comma/space/newline-separated sender-domain matchers)
+
+Examples:
+
+- exact domain: `example.com`
+- one-label subdomain wildcard: `glob:*.example.com`
+- regex: `re:(?:.+\\.)?example\\.com`
+
+Matching is against the sender domain only, never the full email address.
+
+Matcher forms:
+
+- bare entry: exact domain match, case-insensitive
+- `glob:`: one-label subdomain wildcard only
+- `re:`: full-domain regex, compiled case-insensitively
+
+Because the value is list-parsed, individual matcher entries cannot contain commas or spaces.
+
 ### ACS Delivery
 
 - `ACS_ENDPOINT` (optional if connection string contains `endpoint=`)
@@ -107,6 +128,7 @@ export SMTP_AUTH_USERNAME=jira
 export SMTP_AUTH_PASSWORD=secret
 export SMTP_STARTTLS_ENABLED=false
 export SMTPS_LISTEN_ADDR=
+export SENDER_POLICY_MODE=rewrite
 
 make run
 ```

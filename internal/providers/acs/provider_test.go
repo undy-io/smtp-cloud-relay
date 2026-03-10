@@ -196,11 +196,12 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 
 	msg := email.Message{
-		From:     "ignored@example.com",
-		To:       []string{"one@example.com", " ", "two@example.com"},
-		Subject:  "Test Subject",
-		TextBody: "Text body",
-		HTMLBody: "<p>HTML body</p>",
+		HeaderFrom: "ignored@example.com",
+		ReplyTo:    []string{"reply@example.com"},
+		To:         []string{"one@example.com", " ", "two@example.com"},
+		Subject:    "Test Subject",
+		TextBody:   "Text body",
+		HTMLBody:   "<p>HTML body</p>",
 		Attachments: []email.Attachment{
 			{Filename: "note.txt", ContentType: "text/plain", Data: []byte("hello note")},
 			{Data: []byte("hello default")},
@@ -242,6 +243,9 @@ func TestSendMapsPayload(t *testing.T) {
 	if captured.Content.HTML != "<p>HTML body</p>" {
 		t.Fatalf("unexpected html: %q", captured.Content.HTML)
 	}
+	if len(captured.ReplyTo) != 1 || captured.ReplyTo[0].Address != "reply@example.com" {
+		t.Fatalf("unexpected replyTo: %#v", captured.ReplyTo)
+	}
 
 	if len(captured.Attachments) != 2 {
 		t.Fatalf("unexpected attachment count: %d", len(captured.Attachments))
@@ -272,6 +276,38 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 	if string(a1) != "hello default" {
 		t.Fatalf("unexpected attachment[1] data: %q", string(a1))
+	}
+}
+
+func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
+	var captured sendRequest
+
+	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
+	p.httpClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			bodyBytes, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read request body: %v", err)
+			}
+			if err := json.Unmarshal(bodyBytes, &captured); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			return newResponse(req, http.StatusAccepted, ""), nil
+		}),
+	}
+
+	msg := email.Message{
+		HeaderFrom: "header@example.com",
+		To:         []string{"one@example.com"},
+		Subject:    "Test Subject",
+		TextBody:   "Text body",
+	}
+
+	if err := p.Send(context.Background(), msg); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if len(captured.ReplyTo) != 0 {
+		t.Fatalf("expected no replyTo, got %#v", captured.ReplyTo)
 	}
 }
 

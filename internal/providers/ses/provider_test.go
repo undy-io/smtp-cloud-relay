@@ -181,11 +181,12 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 
 	msg := email.Message{
-		From:     "reply@example.com",
-		To:       []string{"one@example.com", " ", "two@example.com"},
-		Subject:  "Test Subject",
-		TextBody: "Text body",
-		HTMLBody: "<p>HTML body</p>",
+		HeaderFrom: "ignored@example.com",
+		ReplyTo:    []string{"reply@example.com"},
+		To:         []string{"one@example.com", " ", "two@example.com"},
+		Subject:    "Test Subject",
+		TextBody:   "Text body",
+		HTMLBody:   "<p>HTML body</p>",
 		Attachments: []email.Attachment{
 			{Filename: "note.txt", ContentType: "text/plain", Data: []byte("hello note")},
 		},
@@ -248,6 +249,39 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 	if !strings.Contains(rawText, "aGVsbG8gbm90ZQ==") {
 		t.Fatalf("expected attachment payload in MIME body, got %q", rawText)
+	}
+}
+
+func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
+	client := &stubSendEmailClient{
+		out: &sesv2.SendEmailOutput{MessageId: aws.String("msg-123")},
+	}
+
+	p, err := NewProvider("us-gov-west-1", "no-reply@example.com", "", "", testLogger(), WithClient(client))
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	msg := email.Message{
+		HeaderFrom: "header@example.com",
+		To:         []string{"one@example.com"},
+		Subject:    "Test Subject",
+		TextBody:   "Text body",
+	}
+
+	if err := p.Send(context.Background(), msg); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if got := client.input.ReplyToAddresses; len(got) != 0 {
+		t.Fatalf("expected no reply-to addresses, got %#v", got)
+	}
+
+	parsed, err := mail.ReadMessage(bytes.NewReader(client.input.Content.Raw.Data))
+	if err != nil {
+		t.Fatalf("ReadMessage() error = %v", err)
+	}
+	if got := parsed.Header.Get("Reply-To"); got != "" {
+		t.Fatalf("expected no MIME Reply-To header, got %q", got)
 	}
 }
 

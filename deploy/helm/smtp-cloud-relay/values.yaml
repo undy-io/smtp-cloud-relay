@@ -68,6 +68,10 @@ smtp:
   requireTLS: false
   maxInflightSends: 200
 
+senderPolicy:
+  mode: rewrite
+  allowedDomains: [] # bare exact domains, glob:*.example.com, or re:(?:.+\\.)?example\\.com
+
 http:
   listenAddr: 0.0.0.0:8080
 

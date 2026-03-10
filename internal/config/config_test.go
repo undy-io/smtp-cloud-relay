@@ -49,6 +49,12 @@ func TestLoadDefaultsWithRequiredSecurityEnv(t *testing.T) {
 	if cfg.OutboundTLSCAPEM != "" {
 		t.Fatalf("unexpected OutboundTLSCAPEM default: %q", cfg.OutboundTLSCAPEM)
 	}
+	if cfg.SenderPolicyMode != "rewrite" {
+		t.Fatalf("unexpected SenderPolicyMode: %q", cfg.SenderPolicyMode)
+	}
+	if len(cfg.SenderAllowedDomains) != 0 {
+		t.Fatalf("unexpected SenderAllowedDomains default: %#v", cfg.SenderAllowedDomains)
+	}
 	if cfg.SESRegion != "" || cfg.SESSender != "" || cfg.SESAccessKeyID != "" {
 		t.Fatalf("expected SES defaults to be empty, got region=%q sender=%q key=%q", cfg.SESRegion, cfg.SESSender, cfg.SESAccessKeyID)
 	}
@@ -128,6 +134,33 @@ func TestLoadDeliveryTuningFromEnv(t *testing.T) {
 	}
 	if cfg.OutboundTLSCAPEM == "" {
 		t.Fatal("expected OutboundTLSCAPEM to be loaded")
+	}
+}
+
+func TestLoadSenderPolicyFromEnv(t *testing.T) {
+	setSecureDefaults(t)
+	setACSDefaults(t)
+	t.Setenv("SENDER_POLICY_MODE", "strict")
+	t.Setenv("SENDER_ALLOWED_DOMAINS", "example.com\nglob:*.example.org\nre:(?:.+\\.)?example\\.gov")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.SenderPolicyMode != "strict" {
+		t.Fatalf("unexpected SenderPolicyMode: %q", cfg.SenderPolicyMode)
+	}
+	if len(cfg.SenderAllowedDomains) != 3 {
+		t.Fatalf("unexpected SenderAllowedDomains length: %d", len(cfg.SenderAllowedDomains))
+	}
+	if cfg.SenderAllowedDomains[0] != "example.com" {
+		t.Fatalf("unexpected first SenderAllowedDomains entry: %q", cfg.SenderAllowedDomains[0])
+	}
+	if cfg.SenderAllowedDomains[1] != "glob:*.example.org" {
+		t.Fatalf("unexpected second SenderAllowedDomains entry: %q", cfg.SenderAllowedDomains[1])
+	}
+	if cfg.SenderAllowedDomains[2] != "re:(?:.+\\.)?example\\.gov" {
+		t.Fatalf("unexpected third SenderAllowedDomains entry: %q", cfg.SenderAllowedDomains[2])
 	}
 }
 
@@ -350,6 +383,13 @@ func TestLoadValidationErrors(t *testing.T) {
 				"SMTP_MAX_INFLIGHT_SENDS": "0",
 			},
 			substr: "SMTP_MAX_INFLIGHT_SENDS must be >= 1",
+		},
+		{
+			name: "invalid sender policy mode",
+			env: map[string]string{
+				"SENDER_POLICY_MODE": "bad",
+			},
+			substr: "SENDER_POLICY_MODE must be one of",
 		},
 		{
 			name: "retry attempts positive",
