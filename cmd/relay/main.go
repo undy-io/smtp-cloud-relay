@@ -117,7 +117,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := smtpServer.Close(); err != nil {
+	if err := smtpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("failed to close smtp server", "error", err)
 	}
 	if err := obsServer.Shutdown(shutdownCtx); err != nil {
@@ -131,14 +131,17 @@ func buildMessageHandler(cfg config.Config, logger *slog.Logger) (smtprelay.Mess
 		return nil, 0, err
 	}
 
-	inflight := make(chan struct{}, cfg.SMTPMaxInflightSends)
-	sendTimeout := deliveryRuntime.SendTimeout
 	handlerTimeout := deliveryRuntime.HandlerTimeout
+	return newDirectSendMessageHandler(cfg, logger, deliveryRuntime.Provider.Send, deliveryRuntime.SendTimeout), handlerTimeout, nil
+}
 
+func newDirectSendMessageHandler(cfg config.Config, logger *slog.Logger, sendFunc func(context.Context, email.Message) error, sendTimeout time.Duration) smtprelay.MessageHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	inflight := make(chan struct{}, cfg.SMTPMaxInflightSends)
 	relayBusyError := &gosmtp.SMTPError{Code: 451, EnhancedCode: gosmtp.EnhancedCode{4, 3, 2}, Message: "relay busy, try again later"}
-	temporarySendError := &gosmtp.SMTPError{Code: 451, EnhancedCode: gosmtp.EnhancedCode{4, 3, 0}, Message: "temporary relay failure"}
-
-	sendFunc := deliveryRuntime.Provider.Send
 
 	return smtprelay.MessageHandlerFunc(func(ctx context.Context, msg email.Message) error {
 		select {
@@ -172,10 +175,10 @@ func buildMessageHandler(cfg config.Config, logger *slog.Logger) (smtprelay.Mess
 				)
 			}
 			logger.Error("outbound delivery failed", logArgs...)
-			return temporarySendError
+			return smtprelay.MapDeliveryError(err)
 		}
 		return nil
-	}), handlerTimeout, nil
+	})
 }
 
 func loadSMTPServerTLS(certFile, keyFile string) (*tls.Config, error) {

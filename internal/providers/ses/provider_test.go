@@ -65,11 +65,12 @@ func TestNewProviderValidWithInjectedClient(t *testing.T) {
 
 func TestNewProviderInvalid(t *testing.T) {
 	tests := []struct {
-		name   string
-		region string
-		sender string
-		opts   []Option
-		substr string
+		name     string
+		region   string
+		sender   string
+		endpoint string
+		opts     []Option
+		substr   string
 	}{
 		{
 			name:   "missing region",
@@ -104,18 +105,68 @@ func TestNewProviderInvalid(t *testing.T) {
 			opts:   []Option{WithStaticCredentials("AKIA", "", "")},
 			substr: "require both access key and secret",
 		},
+		{
+			name:     "invalid endpoint url",
+			region:   "us-gov-west-1",
+			sender:   "no-reply@example.com",
+			endpoint: "://bad",
+			substr:   "parse ses endpoint",
+		},
+		{
+			name:     "endpoint missing host",
+			region:   "us-gov-west-1",
+			sender:   "no-reply@example.com",
+			endpoint: "https://",
+			substr:   "invalid ses endpoint",
+		},
+		{
+			name:     "endpoint requires https",
+			region:   "us-gov-west-1",
+			sender:   "no-reply@example.com",
+			endpoint: "http://email.us-gov-west-1.amazonaws.com",
+			substr:   "ses endpoint must use https scheme",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewProvider(tc.region, tc.sender, "", "", testLogger(), tc.opts...)
+			_, err := NewProvider(tc.region, tc.sender, tc.endpoint, "", testLogger(), tc.opts...)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
 			if !strings.Contains(err.Error(), tc.substr) {
 				t.Fatalf("expected error to contain %q, got %q", tc.substr, err.Error())
 			}
+			var deliveryErr email.DeliveryError
+			if !errors.As(err, &deliveryErr) {
+				t.Fatalf("expected email.DeliveryError, got %T", err)
+			}
+			if deliveryErr.ProviderName() != "ses" {
+				t.Fatalf("unexpected provider name: %q", deliveryErr.ProviderName())
+			}
+			if deliveryErr.Temporary() {
+				t.Fatalf("expected temporary=false, got true")
+			}
+			if deliveryErr.HTTPStatusCode() != 0 {
+				t.Fatalf("unexpected status code: %d", deliveryErr.HTTPStatusCode())
+			}
 		})
+	}
+}
+
+func TestNewProviderValidHTTPSCustomEndpoint(t *testing.T) {
+	client := &stubSendEmailClient{}
+
+	_, err := NewProvider(
+		"us-gov-west-1",
+		"no-reply@example.com",
+		"https://email.us-gov-west-1.amazonaws.com",
+		"",
+		testLogger(),
+		WithClient(client),
+	)
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
 	}
 }
 
@@ -197,6 +248,33 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 	if !strings.Contains(rawText, "aGVsbG8gbm90ZQ==") {
 		t.Fatalf("expected attachment payload in MIME body, got %q", rawText)
+	}
+}
+
+func TestSendInvalidMessageReturnsTypedError(t *testing.T) {
+	client := &stubSendEmailClient{}
+	p, err := NewProvider("us-gov-west-1", "no-reply@example.com", "", "", testLogger(), WithClient(client))
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	err = p.Send(context.Background(), email.Message{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var deliveryErr email.DeliveryError
+	if !errors.As(err, &deliveryErr) {
+		t.Fatalf("expected email.DeliveryError, got %T", err)
+	}
+	if deliveryErr.ProviderName() != "ses" {
+		t.Fatalf("unexpected provider name: %q", deliveryErr.ProviderName())
+	}
+	if deliveryErr.Temporary() {
+		t.Fatalf("expected temporary=false, got true")
+	}
+	if deliveryErr.HTTPStatusCode() != 0 {
+		t.Fatalf("unexpected status code: %d", deliveryErr.HTTPStatusCode())
 	}
 }
 

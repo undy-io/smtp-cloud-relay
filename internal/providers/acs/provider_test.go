@@ -121,7 +121,43 @@ func TestNewProviderInvalid(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.substr) {
 				t.Fatalf("expected error to contain %q, got %q", tc.substr, err.Error())
 			}
+			var deliveryErr email.DeliveryError
+			if !errors.As(err, &deliveryErr) {
+				t.Fatalf("expected email.DeliveryError, got %T", err)
+			}
+			if deliveryErr.ProviderName() != "acs" {
+				t.Fatalf("unexpected provider name: %q", deliveryErr.ProviderName())
+			}
+			if deliveryErr.Temporary() {
+				t.Fatalf("expected temporary=false, got true")
+			}
+			if deliveryErr.HTTPStatusCode() != 0 {
+				t.Fatalf("unexpected status code: %d", deliveryErr.HTTPStatusCode())
+			}
 		})
+	}
+}
+
+func TestSendInvalidMessageReturnsTypedError(t *testing.T) {
+	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
+
+	err := p.Send(context.Background(), email.Message{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var deliveryErr email.DeliveryError
+	if !errors.As(err, &deliveryErr) {
+		t.Fatalf("expected email.DeliveryError, got %T", err)
+	}
+	if deliveryErr.ProviderName() != "acs" {
+		t.Fatalf("unexpected provider name: %q", deliveryErr.ProviderName())
+	}
+	if deliveryErr.Temporary() {
+		t.Fatalf("expected temporary=false, got true")
+	}
+	if deliveryErr.HTTPStatusCode() != 0 {
+		t.Fatalf("unexpected status code: %d", deliveryErr.HTTPStatusCode())
 	}
 }
 

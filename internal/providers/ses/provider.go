@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 
@@ -89,6 +90,25 @@ func (e *SendError) Error() string {
 
 func (e *SendError) Unwrap() error { return e.Err }
 
+func permanentSendError(err error) *SendError {
+	return &SendError{
+		Attempt:   1,
+		Attempts:  1,
+		Retryable: false,
+		Err:       err,
+	}
+}
+
+func temporarySendError(statusCode int, err error) *SendError {
+	return &SendError{
+		Attempt:    1,
+		Attempts:   1,
+		StatusCode: statusCode,
+		Retryable:  true,
+		Err:        err,
+	}
+}
+
 // WithHTTPClient injects a custom HTTP client.
 func WithHTTPClient(client *http.Client) Option {
 	return func(o *providerOptions) error {
@@ -159,11 +179,16 @@ func NewProvider(region, sender, endpoint, configurationSet string, logger *slog
 	configurationSet = strings.TrimSpace(configurationSet)
 
 	if region == "" {
-		return nil, fmt.Errorf("ses region cannot be empty")
+		return nil, permanentSendError(fmt.Errorf("ses region cannot be empty"))
 	}
 	if sender == "" {
-		return nil, fmt.Errorf("ses sender cannot be empty")
+		return nil, permanentSendError(fmt.Errorf("ses sender cannot be empty"))
 	}
+	validatedEndpoint, err := validateEndpoint(endpoint)
+	if err != nil {
+		return nil, permanentSendError(err)
+	}
+	endpoint = validatedEndpoint
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -177,7 +202,7 @@ func NewProvider(region, sender, endpoint, configurationSet string, logger *slog
 			continue
 		}
 		if err := opt(&o); err != nil {
-			return nil, fmt.Errorf("apply ses option: %w", err)
+			return nil, permanentSendError(fmt.Errorf("apply ses option: %w", err))
 		}
 	}
 
@@ -203,7 +228,7 @@ func NewProvider(region, sender, endpoint, configurationSet string, logger *slog
 
 		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), loadOptions...)
 		if err != nil {
-			return nil, fmt.Errorf("load aws config: %w", err)
+			return nil, permanentSendError(fmt.Errorf("load aws config: %w", err))
 		}
 
 		clientOptions := make([]func(*sesv2.Options), 0, 1)
@@ -224,15 +249,30 @@ func NewProvider(region, sender, endpoint, configurationSet string, logger *slog
 	}, nil
 }
 
+func validateEndpoint(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse ses endpoint: %w", err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid ses endpoint %q", raw)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return "", fmt.Errorf("ses endpoint must use https scheme")
+	}
+
+	return u.String(), nil
+}
+
 func (p *Provider) Send(ctx context.Context, msg email.Message) error {
 	raw, recipients, replyTo, err := buildRawMessage(p.sender, msg)
 	if err != nil {
-		return &SendError{
-			Attempt:   1,
-			Attempts:  1,
-			Retryable: false,
-			Err:       err,
-		}
+		return permanentSendError(err)
 	}
 
 	input := &sesv2.SendEmailInput{
@@ -261,33 +301,29 @@ func (p *Provider) Send(ctx context.Context, msg email.Message) error {
 }
 
 func classifySendError(err error) *SendError {
-	sendErr := &SendError{
-		Attempt:   1,
-		Attempts:  1,
-		Retryable: false,
-		Err:       err,
-	}
-
 	var respErr *smithyhttp.ResponseError
 	if errorsAs(err, &respErr) {
+		if isRetryableStatus(respErr.HTTPStatusCode()) {
+			return temporarySendError(respErr.HTTPStatusCode(), err)
+		}
+		sendErr := permanentSendError(err)
 		sendErr.StatusCode = respErr.HTTPStatusCode()
-		sendErr.Retryable = isRetryableStatus(sendErr.StatusCode)
 		return sendErr
 	}
 
 	var apiErr smithy.APIError
 	if errorsAs(err, &apiErr) {
-		sendErr.Retryable = isRetryableAPIError(apiErr.ErrorCode())
-		return sendErr
+		if isRetryableAPIError(apiErr.ErrorCode()) {
+			return temporarySendError(0, err)
+		}
+		return permanentSendError(err)
 	}
 
 	if errorsIsContextCanceled(err) {
-		sendErr.Retryable = false
-		return sendErr
+		return permanentSendError(err)
 	}
 
-	sendErr.Retryable = true
-	return sendErr
+	return temporarySendError(0, err)
 }
 
 func buildRawMessage(sender string, msg email.Message) ([]byte, []string, []string, error) {

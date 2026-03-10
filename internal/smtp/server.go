@@ -29,6 +29,9 @@ const (
 	defaultHandlerTimeout = 45 * time.Second
 )
 
+// ErrServerAlreadyStarted indicates that Start was called more than once on the same server instance.
+var ErrServerAlreadyStarted = errors.New("smtp server is single-use and has already been started")
+
 // MessageHandler handles parsed SMTP messages.
 type MessageHandler interface {
 	HandleMessage(ctx context.Context, msg email.Message) error
@@ -89,6 +92,20 @@ type Server struct {
 	logger      *slog.Logger
 	readyCh     chan struct{}
 	readyOnce   sync.Once
+
+	lifecycleMu sync.Mutex
+	started     bool
+	startDoneCh chan struct{}
+
+	listenersMu sync.Mutex
+	listeners   []net.Listener
+	serveWG     sync.WaitGroup
+}
+
+type managedListener struct {
+	name string
+	srv  *gosmtp.Server
+	ln   net.Listener
 }
 
 func NewServer(cfg Config, logger *slog.Logger, handler MessageHandler, authProvider AuthProvider) (*Server, error) {
@@ -166,6 +183,7 @@ func NewServer(cfg Config, logger *slog.Logger, handler MessageHandler, authProv
 		smtpsServer: smtpsServer,
 		logger:      logger,
 		readyCh:     make(chan struct{}),
+		startDoneCh: make(chan struct{}),
 	}, nil
 }
 
@@ -181,33 +199,34 @@ func newSMTPListener(addr, domain string, backend *backend, allowInsecureAuth bo
 	return srv
 }
 
-// Ready returns a channel closed after all configured listeners are bound.
+// Ready returns the instance-scoped readiness channel for the server's single allowed run.
+// It is closed after all configured listeners are bound and serving, and it is never reset.
 func (s *Server) Ready() <-chan struct{} {
 	return s.readyCh
 }
 
 // Start runs configured SMTP listeners until context cancellation or fatal error.
+// Server instances are single-use; a second Start call returns ErrServerAlreadyStarted.
 func (s *Server) Start(ctx context.Context) error {
 	if s.smtpServer == nil && s.smtpsServer == nil {
 		return fmt.Errorf("no smtp listeners configured")
 	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	type boundListener struct {
-		name string
-		srv  *gosmtp.Server
-		ln   net.Listener
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	listeners := make([]boundListener, 0, 2)
+	if err := s.beginStart(); err != nil {
+		return err
+	}
+	defer s.markStartDone()
+
+	listeners := make([]managedListener, 0, 2)
 
 	if s.smtpServer != nil {
 		ln, err := net.Listen("tcp", s.smtpServer.Addr)
 		if err != nil {
 			return fmt.Errorf("bind smtp listener %q: %w", s.smtpServer.Addr, err)
 		}
-		listeners = append(listeners, boundListener{name: "smtp", srv: s.smtpServer, ln: ln})
+		listeners = append(listeners, managedListener{name: "smtp", srv: s.smtpServer, ln: ln})
 	}
 
 	if s.smtpsServer != nil {
@@ -219,19 +238,17 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("bind smtps listener %q: %w", s.smtpsServer.Addr, err)
 		}
 		tlsLn := tls.NewListener(ln, s.smtpsServer.TLSConfig)
-		listeners = append(listeners, boundListener{name: "smtps", srv: s.smtpsServer, ln: tlsLn})
+		listeners = append(listeners, managedListener{name: "smtps", srv: s.smtpsServer, ln: tlsLn})
 	}
 
-	s.readyOnce.Do(func() { close(s.readyCh) })
-
 	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
+	s.storeManagedListeners(listeners)
 
 	for _, l := range listeners {
 		l := l
-		wg.Add(1)
+		s.serveWG.Add(1)
 		go func() {
-			defer wg.Done()
+			defer s.serveWG.Done()
 			switch l.name {
 			case "smtp":
 				s.logger.Info("starting smtp server", "addr", l.srv.Addr, "starttls_enabled", l.srv.TLSConfig != nil)
@@ -243,27 +260,19 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}()
 	}
-
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		<-ctx.Done()
-		if err := s.Close(); err != nil && !isClosedServerError(err) {
-			s.logger.Warn("error while closing smtp servers", "error", err)
-		}
-	}()
+	s.readyOnce.Do(func() { close(s.readyCh) })
 
 	wait := make(chan struct{})
 	go func() {
-		wg.Wait()
+		s.serveWG.Wait()
 		close(wait)
 	}()
 
 	select {
 	case err := <-errCh:
-		cancel()
-		<-stopped
-		<-wait
+		if shutdownErr := s.Shutdown(context.Background()); shutdownErr != nil && !isClosedServerError(shutdownErr) {
+			s.logger.Warn("error while shutting down smtp servers after serve failure", "error", shutdownErr)
+		}
 		return err
 	case <-wait:
 		if ctx.Err() != nil {
@@ -271,13 +280,81 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		return nil
 	case <-ctx.Done():
-		<-stopped
-		<-wait
+		if err := s.Shutdown(context.Background()); err != nil && !isClosedServerError(err) {
+			s.logger.Warn("error while shutting down smtp servers", "error", err)
+		}
 		return nil
 	}
 }
 
+// Shutdown closes active listeners and waits for serve goroutines to exit until ctx expires.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var firstErr error
+	if err := s.closeManagedListeners(); err != nil && !isClosedServerError(err) {
+		firstErr = err
+	}
+
+	if err := s.closeServers(); err != nil && !isClosedServerError(err) && firstErr == nil {
+		firstErr = err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.serveWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return firstErr
+	case <-ctx.Done():
+		if firstErr != nil {
+			return firstErr
+		}
+		return ctx.Err()
+	}
+}
+
+// Close is a blocking compatibility wrapper around Shutdown(context.Background()).
+// Callers that need a bounded shutdown should use Shutdown(ctx) directly.
 func (s *Server) Close() error {
+	if err := s.Shutdown(context.Background()); err != nil {
+		return err
+	}
+	s.waitForStartDone()
+	return nil
+}
+
+func (s *Server) storeManagedListeners(listeners []managedListener) {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+
+	s.listeners = make([]net.Listener, 0, len(listeners))
+	for _, listener := range listeners {
+		s.listeners = append(s.listeners, listener.ln)
+	}
+}
+
+func (s *Server) closeManagedListeners() error {
+	s.listenersMu.Lock()
+	listeners := s.listeners
+	s.listeners = nil
+	s.listenersMu.Unlock()
+
+	var firstErr error
+	for _, listener := range listeners {
+		if err := listener.Close(); err != nil && !isClosedServerError(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (s *Server) closeServers() error {
 	var firstErr error
 	if s.smtpServer != nil {
 		if err := s.smtpServer.Close(); err != nil && !isClosedServerError(err) {
@@ -290,6 +367,37 @@ func (s *Server) Close() error {
 		}
 	}
 	return firstErr
+}
+
+func (s *Server) beginStart() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	if s.started {
+		return ErrServerAlreadyStarted
+	}
+	s.started = true
+	return nil
+}
+
+func (s *Server) markStartDone() {
+	s.lifecycleMu.Lock()
+	startDoneCh := s.startDoneCh
+	s.lifecycleMu.Unlock()
+
+	close(startDoneCh)
+}
+
+func (s *Server) waitForStartDone() {
+	s.lifecycleMu.Lock()
+	started := s.started
+	startDoneCh := s.startDoneCh
+	s.lifecycleMu.Unlock()
+
+	if !started {
+		return
+	}
+	<-startDoneCh
 }
 
 type sessionPolicy struct {

@@ -194,6 +194,44 @@ func (e *SendError) Error() string {
 
 func (e *SendError) Unwrap() error { return e.Err }
 
+func permanentSendError(requestID string, attempt, attempts int, err error) *SendError {
+	return &SendError{
+		RequestID: requestID,
+		Attempt:   clampAttempt(attempt),
+		Attempts:  clampAttempt(attempts),
+		Retryable: false,
+		Err:       err,
+	}
+}
+
+func temporarySendError(requestID string, attempt, attempts, statusCode int, err error) *SendError {
+	return &SendError{
+		RequestID:  requestID,
+		Attempt:    clampAttempt(attempt),
+		Attempts:   clampAttempt(attempts),
+		StatusCode: statusCode,
+		Retryable:  true,
+		Err:        err,
+	}
+}
+
+func statusSendError(requestID string, attempt, attempts, statusCode int) *SendError {
+	return &SendError{
+		RequestID:  requestID,
+		Attempt:    clampAttempt(attempt),
+		Attempts:   clampAttempt(attempts),
+		StatusCode: statusCode,
+		Retryable:  isRetryableStatus(statusCode),
+	}
+}
+
+func clampAttempt(v int) int {
+	if v < 1 {
+		return 1
+	}
+	return v
+}
+
 func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger, opts ...Option) (*Provider, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -201,11 +239,11 @@ func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger,
 
 	parsedEndpoint, accessKey, err := parseConnection(endpoint, connectionString)
 	if err != nil {
-		return nil, err
+		return nil, permanentSendError("", 1, 1, err)
 	}
 
 	if strings.TrimSpace(sender) == "" {
-		return nil, fmt.Errorf("acs sender cannot be empty")
+		return nil, permanentSendError("", 1, 1, fmt.Errorf("acs sender cannot be empty"))
 	}
 
 	provider := &Provider{
@@ -228,21 +266,21 @@ func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger,
 			continue
 		}
 		if err := opt(provider); err != nil {
-			return nil, fmt.Errorf("apply provider option: %w", err)
+			return nil, permanentSendError("", 1, 1, fmt.Errorf("apply provider option: %w", err))
 		}
 	}
 
 	if provider.hasHTTPClient && len(provider.extraCAPEMs) > 0 {
-		return nil, fmt.Errorf("cannot combine WithHTTPClient with TLS CA options")
+		return nil, permanentSendError("", 1, 1, fmt.Errorf("cannot combine WithHTTPClient with TLS CA options"))
 	}
 	if provider.hasHTTPClient && provider.hasTransportConfig {
-		return nil, fmt.Errorf("cannot combine WithHTTPClient with WithHTTPTransportConfig")
+		return nil, permanentSendError("", 1, 1, fmt.Errorf("cannot combine WithHTTPClient with WithHTTPTransportConfig"))
 	}
 
 	if !provider.hasHTTPClient {
 		client, err := provider.buildHTTPClient()
 		if err != nil {
-			return nil, err
+			return nil, permanentSendError("", 1, 1, err)
 		}
 		provider.httpClient = client
 	}
@@ -253,17 +291,17 @@ func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger,
 func (p *Provider) Send(ctx context.Context, msg email.Message) error {
 	body, err := buildSendRequest(p.sender, msg)
 	if err != nil {
-		return err
+		return permanentSendError("", 1, 1, err)
 	}
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("marshal acs request: %w", err)
+		return permanentSendError("", 1, 1, fmt.Errorf("marshal acs request: %w", err))
 	}
 
 	requestID, err := newRequestID()
 	if err != nil {
-		return fmt.Errorf("generate request id: %w", err)
+		return permanentSendError("", 1, 1, fmt.Errorf("generate request id: %w", err))
 	}
 
 	var lastErr *SendError
@@ -299,13 +337,7 @@ func (p *Provider) Send(ctx context.Context, msg email.Message) error {
 
 		select {
 		case <-ctx.Done():
-			return &SendError{
-				RequestID: requestID,
-				Attempt:   attempt,
-				Attempts:  p.retryAttempts,
-				Retryable: false,
-				Err:       ctx.Err(),
-			}
+			return permanentSendError(requestID, attempt, p.retryAttempts, ctx.Err())
 		case <-time.After(backoff):
 		}
 	}
@@ -398,24 +430,12 @@ func (p *Provider) sendOnce(ctx context.Context, requestID string, attempt int, 
 
 	signature, err := p.buildSignature(http.MethodPost, target.RequestURI(), xmsDate, target.Host, contentHash)
 	if err != nil {
-		return &SendError{
-			RequestID: requestID,
-			Attempt:   attempt,
-			Attempts:  p.retryAttempts,
-			Retryable: false,
-			Err:       fmt.Errorf("build authorization header: %w", err),
-		}
+		return permanentSendError(requestID, attempt, p.retryAttempts, fmt.Errorf("build authorization header: %w", err))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return &SendError{
-			RequestID: requestID,
-			Attempt:   attempt,
-			Attempts:  p.retryAttempts,
-			Retryable: false,
-			Err:       fmt.Errorf("build request: %w", err),
-		}
+		return permanentSendError(requestID, attempt, p.retryAttempts, fmt.Errorf("build request: %w", err))
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -426,25 +446,13 @@ func (p *Provider) sendOnce(ctx context.Context, requestID string, attempt int, 
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return &SendError{
-			RequestID: requestID,
-			Attempt:   attempt,
-			Attempts:  p.retryAttempts,
-			Retryable: true,
-			Err:       err,
-		}
+		return temporarySendError(requestID, attempt, p.retryAttempts, 0, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBodyBytes))
-		return &SendError{
-			RequestID:  requestID,
-			Attempt:    attempt,
-			Attempts:   p.retryAttempts,
-			StatusCode: resp.StatusCode,
-			Retryable:  isRetryableStatus(resp.StatusCode),
-		}
+		return statusSendError(requestID, attempt, p.retryAttempts, resp.StatusCode)
 	}
 
 	operationLocation := resp.Header.Get("operation-location")

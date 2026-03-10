@@ -20,6 +20,12 @@
   - `/readyz`
   - `/metrics` (placeholder)
 
+Runtime note:
+
+- the embedded SMTP server is single-use per process instance
+- `Shutdown(ctx)` is the bounded shutdown API
+- `Close()` remains a blocking compatibility wrapper
+
 ## Configuration
 
 All config values support `_FILE` variants for Kubernetes secret mounts.
@@ -68,7 +74,7 @@ These settings are provider-agnostic and replace legacy ACS-specific tuning env 
 
 - `SES_REGION` (required in `ses` mode)
 - `SES_SENDER` (required in `ses` mode)
-- `SES_ENDPOINT` (optional custom endpoint)
+- `SES_ENDPOINT` (optional custom endpoint; must use `https://` when set)
 - `SES_CONFIGURATION_SET` (optional)
 - `SES_ACCESS_KEY_ID` (optional; must pair with `SES_SECRET_ACCESS_KEY`)
 - `SES_SECRET_ACCESS_KEY` (optional; must pair with `SES_ACCESS_KEY_ID`)

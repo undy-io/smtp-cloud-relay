@@ -10,20 +10,20 @@ Use this file as the source of truth for active feature work until the relay mee
 
 ## Current State Snapshot
 
-- The relay is ACS-first and already has:
+- The relay already has:
   - SMTP auth
   - CIDR allowlisting
   - STARTTLS/SMTPS support
   - MIME parsing
   - ACS submission
+  - SES submission
   - `/healthz`
   - `/readyz`
-- The current tree has three active defects:
-  - `go test ./...` fails because `internal/providers/ses/provider.go` imports AWS SDK packages that are not declared in `go.mod`
-  - SES provider code exists, but `DELIVERY_MODE=ses` still fails fast in provider construction and is not a supported runtime mode yet
-  - SMTP shutdown can hang because `internal/smtp/server.go` signals readiness before shutdown-safe listener registration is complete
+- The current tree baseline is stable:
+  - `go test ./...` is expected to pass
+  - `DELIVERY_MODE=ses` is supported alongside `acs` and `noop`
+  - SMTP startup, readiness, shutdown, and provider error mapping are implemented
 - The major missing base requirements are:
-  - a working SES implementation alongside ACS
   - deterministic sender handling
   - durable spool + retry
   - idempotent / safe async delivery flow
@@ -71,8 +71,7 @@ Use this format when adding or revising tasks:
 
 ## Recommended Execution Order
 
-- Finish `CORE-001` through `CORE-004` first to restore a clean tree, finish SES baseline support, and fix current correctness problems.
-- Finish `SENDER-001` through `SENDER-003` next so sender behavior is deterministic before durable async delivery is added.
+- Start with `SENDER-001` through `SENDER-003` so sender behavior is deterministic before durable async delivery is added.
 - Finish `SPOOL-001` through `SPOOL-006` as one coordinated stream.
 - Finish `OBS-001` and `OBS-002` after the spool exists.
 - Finish `QA-001` and `DOC-001` last.
@@ -161,7 +160,7 @@ Use this format when adding or revising tasks:
   - Add a factory-level test proving the SES branch passes trust config into `httpclient.Build`.
 
 ### CORE-001B — Enforce HTTPS Validation For Custom SES Endpoints
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On: CORE-001
 - Goal: prevent misconfiguration from routing SES traffic and credentials to a non-HTTPS custom endpoint.
@@ -184,7 +183,7 @@ Use this format when adding or revising tasks:
   - Keep this scoped to transport safety only; this task does not add provider-specific allowlists or certificate pinning.
 
 ### CORE-002 — Fix SMTP Readiness / Shutdown Race
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On: none
 - Goal: make startup readiness and shutdown deterministic.
@@ -212,8 +211,36 @@ Use this format when adding or revising tasks:
   - `Shutdown(ctx)` should close the wrapper-managed listeners first, then wait for the serve goroutines to exit, then honor `ctx`.
   - `Close()` should call `Shutdown` using a compatibility path, not duplicate shutdown logic.
 
+### CORE-002A — Define SMTP Server Lifecycle Semantics
+- Status: done
+- Priority: P1
+- Depends On:
+  - CORE-002
+- Goal: make `internal/smtp.Server` lifecycle behavior explicit and safe for future reuse.
+- Create: none
+- Touch:
+  - `internal/smtp/server.go`
+  - `internal/smtp/server_integration_test.go`
+  - `README.md`
+- Remove:
+  - implicit undefined behavior when `Start()` is called more than once on the same server instance
+- Symbols:
+  - `Server.Start`
+  - `Server.Close`
+  - `Server.Ready`
+  - `Server.Shutdown`
+- Acceptance:
+  - repeated `Start()` attempts are explicitly rejected with a stable error
+  - concurrent and sequential second `Start()` calls return the same sentinel error
+  - `Close()` blocking behavior is documented and covered by tests
+  - readiness behavior remains correct under the chosen single-use lifecycle model
+- Implementation Notes:
+  - The server now explicitly enforces single-use semantics instead of leaving restart behavior undefined.
+  - `Ready()` remains bound to the single allowed run and is never reset.
+  - `Close()` remains a blocking compatibility API over `Shutdown(context.Background())` and now waits for `Start()` to return.
+
 ### CORE-003 — Standardize Provider Error Metadata
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On: CORE-001
 - Goal: make every outbound failure path return consistent retryability metadata.
@@ -248,7 +275,7 @@ Use this format when adding or revising tasks:
   - `noop` can remain success-only, but if it returns an error in any new edge case, that error must also fit the delivery error contract.
 
 ### CORE-004 — Map Delivery Errors To Correct SMTP Replies
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On: CORE-003
 - Goal: stop treating permanent provider failures as temporary SMTP failures.
