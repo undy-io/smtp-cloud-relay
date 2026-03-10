@@ -351,6 +351,9 @@ func buildRawMessage(sender string, msg email.Message) ([]byte, []string, []stri
 	if len(replyTo) > 0 {
 		writeHeader(&out, "Reply-To", strings.Join(replyTo, ", "))
 	}
+	for _, header := range email.SenderTraceHeaders(msg) {
+		writeHeader(&out, header.Name, header.Value)
+	}
 	if strings.TrimSpace(msg.Subject) != "" {
 		writeHeader(&out, "Subject", mime.QEncoding.Encode("utf-8", msg.Subject))
 	} else {

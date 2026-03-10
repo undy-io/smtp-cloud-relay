@@ -85,6 +85,11 @@ Matcher forms:
 
 Because the value is list-parsed, individual matcher entries cannot contain commas or spaces.
 
+Outbound provider payloads also inject sender trace headers when those values are available:
+
+- `X-SMTP-Relay-Envelope-From`
+- `X-SMTP-Relay-Header-From`
+
 ### ACS Delivery
 
 - `ACS_ENDPOINT` (optional if connection string contains `endpoint=`)

@@ -402,12 +402,15 @@ Use this format when adding or revising tasks:
   - Sender-policy results carry an explicit decision reason so relay logs do not have to reconstruct why a reply-to was dropped.
 
 ### SENDER-003 — Extend Provider Payloads For Reply-To And Trace Headers
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On: SENDER-002
 - Goal: preserve original sender intent consistently across ACS and SES while still sending from the verified provider sender.
-- Create: none
+- Create:
+  - `internal/email/trace_headers.go`
+  - `internal/email/trace_headers_test.go`
 - Touch:
+  - `README.md`
   - `internal/providers/acs/provider.go`
   - `internal/providers/acs/provider_test.go`
   - `internal/providers/ses/provider.go`
@@ -428,6 +431,7 @@ Use this format when adding or revising tasks:
   - The visible outbound sender must always remain the configured verified sender for the selected provider.
   - Trace headers should be included even when `Message.ReplyTo` is empty, unless the value is unavailable.
   - Reuse the effective `Message.ReplyTo` computed by `SENDER-002`; do not rerun sender selection or domain matching inside providers.
+  - Use the shared `internal/email` trace-header helper so ACS and SES do not drift on header names or omission rules.
   - For SES, use the existing raw MIME builder and add the headers directly into the MIME message rather than inventing a provider-specific side channel.
 
 ## Durable Spool + Idempotency

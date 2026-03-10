@@ -24,13 +24,11 @@ const (
 type SenderPolicyOptions struct {
 	Mode                  SenderPolicyMode
 	AllowedDomainPatterns []string
-	VerifiedSender        string
 }
 
 type SenderPolicy struct {
-	mode           SenderPolicyMode
-	verifiedSender string
-	matchers       []senderDomainMatcher
+	mode     SenderPolicyMode
+	matchers []senderDomainMatcher
 }
 
 type SenderPolicyResult struct {
@@ -80,9 +78,8 @@ func NewSenderPolicy(opts SenderPolicyOptions) (SenderPolicy, error) {
 	}
 
 	return SenderPolicy{
-		mode:           mode,
-		verifiedSender: strings.TrimSpace(opts.VerifiedSender),
-		matchers:       matchers,
+		mode:     mode,
+		matchers: matchers,
 	}, nil
 }
 

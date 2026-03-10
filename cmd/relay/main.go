@@ -144,19 +144,7 @@ func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
 	return email.NewSenderPolicy(email.SenderPolicyOptions{
 		Mode:                  email.SenderPolicyMode(cfg.SenderPolicyMode),
 		AllowedDomainPatterns: cfg.SenderAllowedDomains,
-		VerifiedSender:        verifiedSenderForMode(cfg),
 	})
-}
-
-func verifiedSenderForMode(cfg config.Config) string {
-	switch cfg.DeliveryMode {
-	case "acs":
-		return cfg.ACSSender
-	case "ses":
-		return cfg.SESSender
-	default:
-		return ""
-	}
 }
 
 func newDirectSendMessageHandler(cfg config.Config, logger *slog.Logger, senderPolicy email.SenderPolicy, sendFunc func(context.Context, email.Message) error, sendTimeout time.Duration) smtprelay.MessageHandler {

@@ -181,12 +181,13 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 
 	msg := email.Message{
-		HeaderFrom: "ignored@example.com",
-		ReplyTo:    []string{"reply@example.com"},
-		To:         []string{"one@example.com", " ", "two@example.com"},
-		Subject:    "Test Subject",
-		TextBody:   "Text body",
-		HTMLBody:   "<p>HTML body</p>",
+		EnvelopeFrom: "envelope@example.com",
+		HeaderFrom:   "ignored@example.com",
+		ReplyTo:      []string{"reply@example.com"},
+		To:           []string{"one@example.com", " ", "two@example.com"},
+		Subject:      "Test Subject",
+		TextBody:     "Text body",
+		HTMLBody:     "<p>HTML body</p>",
 		Attachments: []email.Attachment{
 			{Filename: "note.txt", ContentType: "text/plain", Data: []byte("hello note")},
 		},
@@ -230,6 +231,12 @@ func TestSendMapsPayload(t *testing.T) {
 	if got := parsed.Header.Get("Reply-To"); got != "reply@example.com" {
 		t.Fatalf("unexpected MIME Reply-To header: %q", got)
 	}
+	if got := parsed.Header.Get(email.TraceHeaderEnvelopeFrom); got != "envelope@example.com" {
+		t.Fatalf("unexpected envelope trace header: %q", got)
+	}
+	if got := parsed.Header.Get(email.TraceHeaderHeaderFrom); got != "ignored@example.com" {
+		t.Fatalf("unexpected header trace header: %q", got)
+	}
 
 	decoder := &mime.WordDecoder{}
 	decodedSubject, err := decoder.DecodeHeader(parsed.Header.Get("Subject"))
@@ -241,6 +248,15 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 
 	rawText := string(raw)
+	if strings.Index(rawText, email.TraceHeaderEnvelopeFrom+": envelope@example.com") == -1 {
+		t.Fatalf("expected envelope trace header in raw MIME, got %q", rawText)
+	}
+	if strings.Index(rawText, email.TraceHeaderHeaderFrom+": ignored@example.com") == -1 {
+		t.Fatalf("expected header trace header in raw MIME, got %q", rawText)
+	}
+	if strings.Index(rawText, email.TraceHeaderEnvelopeFrom+": envelope@example.com") > strings.Index(rawText, email.TraceHeaderHeaderFrom+": ignored@example.com") {
+		t.Fatalf("expected envelope trace header before header trace header, got %q", rawText)
+	}
 	if !strings.Contains(rawText, "multipart/mixed") {
 		t.Fatalf("expected multipart/mixed MIME body, got %q", rawText)
 	}
@@ -282,6 +298,12 @@ func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 	}
 	if got := parsed.Header.Get("Reply-To"); got != "" {
 		t.Fatalf("expected no MIME Reply-To header, got %q", got)
+	}
+	if got := parsed.Header.Get(email.TraceHeaderEnvelopeFrom); got != "" {
+		t.Fatalf("expected no envelope trace header, got %q", got)
+	}
+	if got := parsed.Header.Get(email.TraceHeaderHeaderFrom); got != "header@example.com" {
+		t.Fatalf("unexpected header trace header: %q", got)
 	}
 }
 

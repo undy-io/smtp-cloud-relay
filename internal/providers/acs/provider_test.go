@@ -196,12 +196,13 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 
 	msg := email.Message{
-		HeaderFrom: "ignored@example.com",
-		ReplyTo:    []string{"reply@example.com"},
-		To:         []string{"one@example.com", " ", "two@example.com"},
-		Subject:    "Test Subject",
-		TextBody:   "Text body",
-		HTMLBody:   "<p>HTML body</p>",
+		EnvelopeFrom: "envelope@example.com",
+		HeaderFrom:   "ignored@example.com",
+		ReplyTo:      []string{"reply@example.com"},
+		To:           []string{"one@example.com", " ", "two@example.com"},
+		Subject:      "Test Subject",
+		TextBody:     "Text body",
+		HTMLBody:     "<p>HTML body</p>",
 		Attachments: []email.Attachment{
 			{Filename: "note.txt", ContentType: "text/plain", Data: []byte("hello note")},
 			{Data: []byte("hello default")},
@@ -245,6 +246,15 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 	if len(captured.ReplyTo) != 1 || captured.ReplyTo[0].Address != "reply@example.com" {
 		t.Fatalf("unexpected replyTo: %#v", captured.ReplyTo)
+	}
+	if len(captured.Headers) != 2 {
+		t.Fatalf("unexpected headers: %#v", captured.Headers)
+	}
+	if got := captured.Headers[email.TraceHeaderEnvelopeFrom]; got != "envelope@example.com" {
+		t.Fatalf("unexpected envelope trace header: %q", got)
+	}
+	if got := captured.Headers[email.TraceHeaderHeaderFrom]; got != "ignored@example.com" {
+		t.Fatalf("unexpected header trace header: %q", got)
 	}
 
 	if len(captured.Attachments) != 2 {
@@ -308,6 +318,12 @@ func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 	}
 	if len(captured.ReplyTo) != 0 {
 		t.Fatalf("expected no replyTo, got %#v", captured.ReplyTo)
+	}
+	if got := captured.Headers[email.TraceHeaderEnvelopeFrom]; got != "" {
+		t.Fatalf("expected no envelope trace header, got %q", got)
+	}
+	if got := captured.Headers[email.TraceHeaderHeaderFrom]; got != "header@example.com" {
+		t.Fatalf("unexpected header trace header: %q", got)
 	}
 }
 

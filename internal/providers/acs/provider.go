@@ -138,11 +138,12 @@ func WithTLSCAPEM(pem string) Option {
 }
 
 type sendRequest struct {
-	SenderAddress string          `json:"senderAddress"`
-	Recipients    recipients      `json:"recipients"`
-	Content       content         `json:"content"`
-	ReplyTo       []recipient     `json:"replyTo,omitempty"`
-	Attachments   []attachmentDTO `json:"attachments,omitempty"`
+	SenderAddress string            `json:"senderAddress"`
+	Recipients    recipients        `json:"recipients"`
+	Content       content           `json:"content"`
+	ReplyTo       []recipient       `json:"replyTo,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	Attachments   []attachmentDTO   `json:"attachments,omitempty"`
 }
 
 type recipients struct {
@@ -398,6 +399,9 @@ func buildSendRequest(sender string, msg email.Message) (sendRequest, error) {
 	replyToRecipients := normalizeReplyToRecipients(msg.ReplyTo)
 	if len(replyToRecipients) > 0 {
 		body.ReplyTo = replyToRecipients
+	}
+	if traceHeaders := email.SenderTraceHeaderMap(msg); len(traceHeaders) > 0 {
+		body.Headers = traceHeaders
 	}
 
 	if len(msg.Attachments) > 0 {
