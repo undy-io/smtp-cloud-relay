@@ -744,7 +744,7 @@ Use this format when adding or revising tasks:
 - Symbols:
   - `spool.Store`
   - `PayloadStore`
-  - `SQLiteStore`
+  - `SpoolStore`
   - `internal/relay`
 - Acceptance:
   - storage-management work completes before relay-path enqueue integration begins
@@ -882,26 +882,28 @@ Use this format when adding or revising tasks:
   - config and deployment surface in `SPOOL-006`
 
 ### SPOOL-002C — Introduce A Hybrid Spool Coordinator
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-002B
 - Goal: compose record-state management and payload management behind the public spool contract.
 - Create:
-  - a top-level coordinator such as `internal/spool/hybrid_store.go`
+  - `internal/spool/spool_store.go`
   - any store-construction helper needed to build the composed spool store from an explicit root path
 - Touch:
   - `internal/spool/store.go`
-  - `internal/spool/sqlite_store.go`
+  - `internal/spool/spool_store.go`
   - `internal/spool/payload_store.go`
   - `internal/spool/*_test.go`
   - `FEATURE.md`
   - `CONTINUE.md`
 - Remove:
-  - `SQLiteStore` as the top-level `spool.Store` implementation if a coordinator replaces it
+  - `SQLiteStore` as the top-level `spool.Store` implementation
 - Symbols:
   - `Store`
-  - `SpoolStore` / `HybridStore`
+  - `SpoolStore`
+  - `DefaultRoot`
+  - `NewSpoolStore`
   - ID generation
   - enqueue sequencing
   - recovery reconciliation
@@ -920,9 +922,9 @@ Use this format when adding or revising tasks:
   - before `SPOOL-006`, the explicit spool root used by process wiring is `/var/lib/smtp-cloud-relay/spool`
   - startup fails hard if the spool store cannot be created or opened at that root
 - Implementation Notes:
-  - If the current hybrid store shape is too messy, rewrite it now.
   - This task is the boundary between storage-internal cleanup and relay-path integration.
   - Until `SPOOL-006` externalizes configuration, the process should construct the store with an explicit root path argument. That explicit path should match the future default spool directory rather than inventing a second location later.
+  - `SpoolStore` is now the only top-level concrete spool store type; do not reintroduce `SQLiteStore` as a public wrapper.
 - Later In:
   - relay enqueue service and SMTP-path consumption of the composed store in `SPOOL-002D` through `SPOOL-002F`
   - provider async contract in `SPOOL-003`
@@ -1233,7 +1235,7 @@ Use this format when adding or revising tasks:
   - `internal/relay/handler.go`
   - `internal/spool/types.go`
   - `internal/spool/store.go`
-  - `internal/spool/sqlite_store.go`
+  - `internal/spool/spool_store.go`
   - `internal/spool/schema.go`
 - Remove: none
 - Symbols:
@@ -1272,7 +1274,7 @@ Use this format when adding or revising tasks:
   - `internal/spool/worker.go`
   - `internal/spool/worker_test.go`
   - `internal/spool/store.go`
-  - `internal/spool/sqlite_store.go`
+  - `internal/spool/spool_store.go`
   - `internal/spool/schema.go`
 - Remove: none
 - Symbols:
@@ -1306,7 +1308,7 @@ Use this format when adding or revising tasks:
   - `internal/spool/worker_test.go`
   - `internal/spool/types.go`
   - `internal/spool/store.go`
-  - `internal/spool/sqlite_store.go`
+  - `internal/spool/spool_store.go`
   - `internal/spool/schema.go`
 - Remove: none
 - Symbols:

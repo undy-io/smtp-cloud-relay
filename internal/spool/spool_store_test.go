@@ -14,14 +14,14 @@ import (
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
 )
 
-func TestNewSQLiteStoreCreatesSchemaAndIndexes(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestNewSpoolStoreCreatesSchemaAndIndexes(t *testing.T) {
+	store := newSpoolTestStore(t)
 
 	for _, path := range []string{
-		filepath.Join(store.root, spoolDBFileName),
-		filepath.Join(store.root, payloadsDirName),
-		filepath.Join(store.root, payloadOrphansDirName),
-		filepath.Join(store.root, stagingDirName),
+		filepath.Join(store.records.root, spoolDBFileName),
+		filepath.Join(store.records.root, payloadsDirName),
+		filepath.Join(store.records.root, payloadOrphansDirName),
+		filepath.Join(store.records.root, stagingDirName),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("Stat(%q) error: %v", path, err)
@@ -30,7 +30,7 @@ func TestNewSQLiteStoreCreatesSchemaAndIndexes(t *testing.T) {
 
 	for _, name := range []string{"records", "idx_records_ready", "idx_records_operation_id"} {
 		var count int
-		if err := store.db.QueryRow(`
+		if err := store.records.db.QueryRow(`
 			SELECT COUNT(*)
 			FROM sqlite_master
 			WHERE name = ?`, name).Scan(&count); err != nil {
@@ -42,7 +42,7 @@ func TestNewSQLiteStoreCreatesSchemaAndIndexes(t *testing.T) {
 	}
 
 	var version int
-	if err := store.db.QueryRow(`PRAGMA user_version;`).Scan(&version); err != nil {
+	if err := store.records.db.QueryRow(`PRAGMA user_version;`).Scan(&version); err != nil {
 		t.Fatalf("QueryRow(user_version) error: %v", err)
 	}
 	if version != spoolSchemaVersion {
@@ -50,21 +50,21 @@ func TestNewSQLiteStoreCreatesSchemaAndIndexes(t *testing.T) {
 	}
 }
 
-func TestNewSQLiteStoreReopensCurrentV1Schema(t *testing.T) {
-	store := newSQLiteTestStore(t)
-	root := store.root
+func TestNewSpoolStoreReopensCurrentV1Schema(t *testing.T) {
+	store := newSpoolTestStore(t)
+	root := store.records.root
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close() error: %v", err)
 	}
 
-	reopened, err := NewSQLiteStore(root)
+	reopened, err := NewSpoolStore(root)
 	if err != nil {
-		t.Fatalf("NewSQLiteStore() reopen error: %v", err)
+		t.Fatalf("NewSpoolStore() reopen error: %v", err)
 	}
 	defer reopened.Close()
 }
 
-func TestNewSQLiteStoreRejectsSymlinkedRootWithoutTouchingTarget(t *testing.T) {
+func TestNewSpoolStoreRejectsSymlinkedRootWithoutTouchingTarget(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "target")
 	if err := os.MkdirAll(target, spoolDirMode); err != nil {
@@ -75,9 +75,9 @@ func TestNewSQLiteStoreRejectsSymlinkedRootWithoutTouchingTarget(t *testing.T) {
 		t.Fatalf("Symlink() error: %v", err)
 	}
 
-	_, err := NewSQLiteStore(root)
+	_, err := NewSpoolStore(root)
 	if err == nil {
-		t.Fatal("expected NewSQLiteStore() to fail for symlinked root")
+		t.Fatal("expected NewSpoolStore() to fail for symlinked root")
 	}
 	for _, name := range []string{payloadsDirName, payloadOrphansDirName, stagingDirName, spoolDBFileName} {
 		if _, statErr := os.Stat(filepath.Join(target, name)); !errors.Is(statErr, os.ErrNotExist) {
@@ -86,8 +86,8 @@ func TestNewSQLiteStoreRejectsSymlinkedRootWithoutTouchingTarget(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreEnqueueWritesPayloadAndRow(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreEnqueueWritesPayloadAndRow(t *testing.T) {
+	store := newSpoolTestStore(t)
 	now := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	store.newID = sequenceIDs("00000000-0000-4000-8000-000000000001")
@@ -112,7 +112,7 @@ func TestSQLiteStoreEnqueueWritesPayloadAndRow(t *testing.T) {
 		t.Fatalf("unexpected state: %q", rec.State)
 	}
 
-	meta := readSQLiteMetadata(t, store, rec.ID)
+	meta := readSpoolMetadata(t, store, rec.ID)
 	if meta.State != StateQueued || meta.Attempt != 0 {
 		t.Fatalf("unexpected stored metadata: %#v", meta)
 	}
@@ -123,12 +123,12 @@ func TestSQLiteStoreEnqueueWritesPayloadAndRow(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreEnqueueCleansPayloadWhenInsertFails(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreEnqueueCleansPayloadWhenInsertFails(t *testing.T) {
+	store := newSpoolTestStore(t)
 	recordID := testRecordID(1)
 	store.newID = sequenceIDs(recordID)
 
-	if err := store.db.Close(); err != nil {
+	if err := store.records.db.Close(); err != nil {
 		t.Fatalf("Close() error: %v", err)
 	}
 
@@ -141,8 +141,8 @@ func TestSQLiteStoreEnqueueCleansPayloadWhenInsertFails(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreClaimReadyOrdersRowsAndDeadLettersBrokenPayload(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreClaimReadyOrdersRowsAndDeadLettersBrokenPayload(t *testing.T) {
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 
 	store.now = func() time.Time { return base }
@@ -193,7 +193,7 @@ func TestSQLiteStoreClaimReadyOrdersRowsAndDeadLettersBrokenPayload(t *testing.T
 		t.Fatalf("unexpected claimed record: %q", rec.ID)
 	}
 
-	broken := readSQLiteMetadata(t, store, brokenID)
+	broken := readSpoolMetadata(t, store, brokenID)
 	if broken.State != StateDeadLetter {
 		t.Fatalf("expected broken record to be dead-lettered, got %q", broken.State)
 	}
@@ -201,14 +201,14 @@ func TestSQLiteStoreClaimReadyOrdersRowsAndDeadLettersBrokenPayload(t *testing.T
 		t.Fatalf("unexpected broken last error: %#v", broken.LastError)
 	}
 
-	future := readSQLiteMetadata(t, store, futureID)
+	future := readSpoolMetadata(t, store, futureID)
 	if future.State != StateQueued {
 		t.Fatalf("expected future record to remain queued, got %q", future.State)
 	}
 }
 
-func TestSQLiteStoreClaimReadyRequeuesTransientPayloadLoadFailure(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreClaimReadyRequeuesTransientPayloadLoadFailure(t *testing.T) {
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return base }
 	store.newID = sequenceIDs(testRecordID(1))
@@ -237,7 +237,7 @@ func TestSQLiteStoreClaimReadyRequeuesTransientPayloadLoadFailure(t *testing.T) 
 		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 
-	meta := readSQLiteMetadata(t, store, rec.ID)
+	meta := readSpoolMetadata(t, store, rec.ID)
 	if meta.State != StateQueued {
 		t.Fatalf("expected record to be requeued, got %q", meta.State)
 	}
@@ -257,8 +257,8 @@ func TestSQLiteStoreClaimReadyRequeuesTransientPayloadLoadFailure(t *testing.T) 
 	}
 }
 
-func TestSQLiteStoreTransitionMethodsPreserveAttemptSemantics(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreTransitionMethodsPreserveAttemptSemantics(t *testing.T) {
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return base }
 	store.newID = sequenceIDs(testRecordID(1))
@@ -332,8 +332,8 @@ func TestSQLiteStoreTransitionMethodsPreserveAttemptSemantics(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRecoverRequeuesSubmittedDeadLettersBrokenAndQuarantinesOrphans(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreRecoverRequeuesSubmittedDeadLettersBrokenAndQuarantinesOrphans(t *testing.T) {
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 
 	store.now = func() time.Time { return base }
@@ -404,7 +404,7 @@ func TestSQLiteStoreRecoverRequeuesSubmittedDeadLettersBrokenAndQuarantinesOrpha
 		t.Fatalf("unexpected orphaned payloads: %#v", result.OrphanedPayloads)
 	}
 
-	requeuedMeta := readSQLiteMetadata(t, store, working.ID)
+	requeuedMeta := readSpoolMetadata(t, store, working.ID)
 	if requeuedMeta.State != StateQueued {
 		t.Fatalf("expected working record to be requeued, got %q", requeuedMeta.State)
 	}
@@ -412,19 +412,19 @@ func TestSQLiteStoreRecoverRequeuesSubmittedDeadLettersBrokenAndQuarantinesOrpha
 		t.Fatalf("unexpected requeued next attempt: %s", requeuedMeta.NextAttemptAt)
 	}
 
-	brokenMeta := readSQLiteMetadata(t, store, brokenSubmittedID)
+	brokenMeta := readSpoolMetadata(t, store, brokenSubmittedID)
 	if brokenMeta.State != StateDeadLetter || brokenMeta.LastError == nil || brokenMeta.LastError.Provider != spoolProviderName {
 		t.Fatalf("unexpected broken submitted metadata: %#v", brokenMeta)
 	}
 
-	validMeta := readSQLiteMetadata(t, store, validSubmittedID)
+	validMeta := readSpoolMetadata(t, store, validSubmittedID)
 	if validMeta.State != StateSubmitted {
 		t.Fatalf("expected valid submitted record to remain submitted, got %q", validMeta.State)
 	}
 }
 
-func TestSQLiteStoreRecoverReturnsTransientPayloadLoadFailure(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreRecoverReturnsTransientPayloadLoadFailure(t *testing.T) {
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return base }
 	store.newID = sequenceIDs(testRecordID(1))
@@ -454,7 +454,7 @@ func TestSQLiteStoreRecoverReturnsTransientPayloadLoadFailure(t *testing.T) {
 		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 
-	meta := readSQLiteMetadata(t, store, working.ID)
+	meta := readSpoolMetadata(t, store, working.ID)
 	if meta.State != StateQueued {
 		t.Fatalf("expected working record to remain requeued, got %q", meta.State)
 	}
@@ -463,8 +463,8 @@ func TestSQLiteStoreRecoverReturnsTransientPayloadLoadFailure(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreClaimReadyMissingPayloadRootReturnsStoreError(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreClaimReadyMissingPayloadRootReturnsStoreError(t *testing.T) {
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return base }
 	store.newID = sequenceIDs(testRecordID(1))
@@ -490,7 +490,7 @@ func TestSQLiteStoreClaimReadyMissingPayloadRootReturnsStoreError(t *testing.T) 
 	if _, storeErr := AsStoreError(err); !storeErr {
 		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
-	meta := readSQLiteMetadata(t, store, rec.ID)
+	meta := readSpoolMetadata(t, store, rec.ID)
 	if meta.State != StateQueued {
 		t.Fatalf("expected record to remain queued after store error, got %q", meta.State)
 	}
@@ -499,8 +499,8 @@ func TestSQLiteStoreClaimReadyMissingPayloadRootReturnsStoreError(t *testing.T) 
 	}
 }
 
-func TestSQLiteStoreRecoverMissingPayloadRootReturnsStoreError(t *testing.T) {
-	store := newSQLiteTestStore(t)
+func TestSpoolStoreRecoverMissingPayloadRootReturnsStoreError(t *testing.T) {
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return base }
 	store.newID = sequenceIDs(testRecordID(1))
@@ -527,7 +527,7 @@ func TestSQLiteStoreRecoverMissingPayloadRootReturnsStoreError(t *testing.T) {
 	if _, storeErr := AsStoreError(err); !storeErr {
 		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
-	meta := readSQLiteMetadata(t, store, rec.ID)
+	meta := readSpoolMetadata(t, store, rec.ID)
 	if meta.State != StateQueued {
 		t.Fatalf("expected working record to stay requeued after store error, got %q", meta.State)
 	}
@@ -536,39 +536,39 @@ func TestSQLiteStoreRecoverMissingPayloadRootReturnsStoreError(t *testing.T) {
 	}
 }
 
-func TestNewSQLiteStoreRejectsWeakCurrentVersionSchema(t *testing.T) {
+func TestNewSpoolStoreRejectsWeakCurrentVersionSchema(t *testing.T) {
 	root := t.TempDir()
 	db := newWeakSchemaSQLiteDatabase(t, root, spoolSchemaVersion)
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close() error: %v", err)
 	}
 
-	_, err := NewSQLiteStore(root)
+	_, err := NewSpoolStore(root)
 	if err == nil {
-		t.Fatal("expected NewSQLiteStore() to reject weak current-version schema")
+		t.Fatal("expected NewSpoolStore() to reject weak current-version schema")
 	}
 	if !strings.Contains(err.Error(), "delete the spool directory and restart") {
 		t.Fatalf("expected unsupported-local-schema error, got %v", err)
 	}
 }
 
-func TestNewSQLiteStoreRejectsUnversionedExistingSchema(t *testing.T) {
+func TestNewSpoolStoreRejectsUnversionedExistingSchema(t *testing.T) {
 	root := t.TempDir()
 	db := newWeakSchemaSQLiteDatabase(t, root, 0)
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close() error: %v", err)
 	}
 
-	_, err := NewSQLiteStore(root)
+	_, err := NewSpoolStore(root)
 	if err == nil {
-		t.Fatal("expected NewSQLiteStore() to reject unversioned existing schema")
+		t.Fatal("expected NewSpoolStore() to reject unversioned existing schema")
 	}
 	if !strings.Contains(err.Error(), "delete the spool directory and restart") {
 		t.Fatalf("expected unsupported-local-schema error, got %v", err)
 	}
 }
 
-func TestNewSQLiteStoreRejectsWrongReadyIndexDefinition(t *testing.T) {
+func TestNewSpoolStoreRejectsWrongReadyIndexDefinition(t *testing.T) {
 	root := t.TempDir()
 	db := newCurrentSchemaSQLiteDatabase(t, root, spoolSchemaVersion,
 		`CREATE INDEX idx_records_ready ON records(next_attempt_at_ms, state, created_at_ms, id);`,
@@ -578,16 +578,16 @@ func TestNewSQLiteStoreRejectsWrongReadyIndexDefinition(t *testing.T) {
 		t.Fatalf("Close() error: %v", err)
 	}
 
-	_, err := NewSQLiteStore(root)
+	_, err := NewSpoolStore(root)
 	if err == nil {
-		t.Fatal("expected NewSQLiteStore() to reject wrong ready-index definition")
+		t.Fatal("expected NewSpoolStore() to reject wrong ready-index definition")
 	}
 	if !strings.Contains(err.Error(), "delete the spool directory and restart") {
 		t.Fatalf("expected unsupported-local-schema error, got %v", err)
 	}
 }
 
-func TestNewSQLiteStoreRejectsWrongOperationIndexDefinition(t *testing.T) {
+func TestNewSpoolStoreRejectsWrongOperationIndexDefinition(t *testing.T) {
 	root := t.TempDir()
 	db := newCurrentSchemaSQLiteDatabase(t, root, spoolSchemaVersion,
 		recordsReadyIndexSchema,
@@ -597,16 +597,16 @@ func TestNewSQLiteStoreRejectsWrongOperationIndexDefinition(t *testing.T) {
 		t.Fatalf("Close() error: %v", err)
 	}
 
-	_, err := NewSQLiteStore(root)
+	_, err := NewSpoolStore(root)
 	if err == nil {
-		t.Fatal("expected NewSQLiteStore() to reject wrong operation-index definition")
+		t.Fatal("expected NewSpoolStore() to reject wrong operation-index definition")
 	}
 	if !strings.Contains(err.Error(), "delete the spool directory and restart") {
 		t.Fatalf("expected unsupported-local-schema error, got %v", err)
 	}
 }
 
-func TestNewSQLiteStoreRejectsMissingRequiredIndex(t *testing.T) {
+func TestNewSpoolStoreRejectsMissingRequiredIndex(t *testing.T) {
 	root := t.TempDir()
 	db := newCurrentSchemaSQLiteDatabase(t, root, spoolSchemaVersion,
 		recordsReadyIndexSchema,
@@ -616,9 +616,9 @@ func TestNewSQLiteStoreRejectsMissingRequiredIndex(t *testing.T) {
 		t.Fatalf("Close() error: %v", err)
 	}
 
-	_, err := NewSQLiteStore(root)
+	_, err := NewSpoolStore(root)
 	if err == nil {
-		t.Fatal("expected NewSQLiteStore() to reject missing required index")
+		t.Fatal("expected NewSpoolStore() to reject missing required index")
 	}
 	if !strings.Contains(err.Error(), "delete the spool directory and restart") {
 		t.Fatalf("expected unsupported-local-schema error, got %v", err)
@@ -626,7 +626,7 @@ func TestNewSQLiteStoreRejectsMissingRequiredIndex(t *testing.T) {
 }
 
 func TestSQLiteSchemaRejectsInvalidRecords(t *testing.T) {
-	store := newSQLiteTestStore(t)
+	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -645,7 +645,7 @@ func TestSQLiteSchemaRejectsInvalidRecords(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := store.db.Exec(`
+			_, err := store.records.db.Exec(`
 				INSERT INTO records (
 					id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
 					last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
@@ -705,11 +705,11 @@ func TestQueryAllIDsRejectsNonCanonicalIDWithoutTrimming(t *testing.T) {
 	}
 }
 
-func newSQLiteTestStore(t *testing.T) *SQLiteStore {
+func newSpoolTestStore(t *testing.T) *SpoolStore {
 	t.Helper()
-	store, err := NewSQLiteStore(t.TempDir())
+	store, err := NewSpoolStore(t.TempDir())
 	if err != nil {
-		t.Fatalf("NewSQLiteStore() error: %v", err)
+		t.Fatalf("NewSpoolStore() error: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -717,9 +717,9 @@ func newSQLiteTestStore(t *testing.T) *SQLiteStore {
 	return store
 }
 
-func readSQLiteMetadata(t *testing.T, store *SQLiteStore, id string) recordMetadata {
+func readSpoolMetadata(t *testing.T, store *SpoolStore, id string) recordMetadata {
 	t.Helper()
-	row := store.db.QueryRow(`
+	row := store.records.db.QueryRow(`
 		SELECT
 			id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
 			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,

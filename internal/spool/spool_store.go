@@ -2,7 +2,6 @@ package spool
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
@@ -11,21 +10,22 @@ import (
 
 const spoolProviderName = "spool"
 
-// SQLiteStore is the temporary top-level Store implementation used until SPOOL-002C.
-type SQLiteStore struct {
-	root     string
-	db       *sql.DB
+// DefaultRoot is the pre-configuration spool root used before SPOOL-006 adds env and Helm wiring.
+const DefaultRoot = "/var/lib/smtp-cloud-relay/spool"
+
+// SpoolStore coordinates SQLite record metadata and filesystem payload storage.
+type SpoolStore struct {
 	records  *sqliteRecordStore
 	payloads *PayloadStore
 	now      func() time.Time
 	newID    func() (string, error)
 }
 
-var _ Store = (*SQLiteStore)(nil)
+var _ Store = (*SpoolStore)(nil)
 
-// NewSQLiteStore constructs the current SQLite-backed spool store.
-func NewSQLiteStore(root string) (*SQLiteStore, error) {
-	store := &SQLiteStore{
+// NewSpoolStore constructs the top-level hybrid spool store for the provided root path.
+func NewSpoolStore(root string) (*SpoolStore, error) {
+	store := &SpoolStore{
 		now: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -45,22 +45,20 @@ func NewSQLiteStore(root string) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-	store.root = records.root
-	store.db = records.db
 	store.records = records
 	store.payloads = payloads
 	return store, nil
 }
 
-// Close releases the underlying SQLite database handle.
-func (s *SQLiteStore) Close() error {
+// Close releases the underlying SQLite database handle used by the spool store.
+func (s *SpoolStore) Close() error {
 	if s == nil || s.records == nil {
 		return nil
 	}
 	return s.records.close()
 }
 
-func (s *SQLiteStore) Enqueue(ctx context.Context, msg email.Message) (Record, error) {
+func (s *SpoolStore) Enqueue(ctx context.Context, msg email.Message) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
 	}
@@ -91,7 +89,7 @@ func (s *SQLiteStore) Enqueue(ctx context.Context, msg email.Message) (Record, e
 	return rec, nil
 }
 
-func (s *SQLiteStore) ClaimReady(ctx context.Context, now time.Time) (Record, bool, error) {
+func (s *SpoolStore) ClaimReady(ctx context.Context, now time.Time) (Record, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
 	}
@@ -124,23 +122,23 @@ func (s *SQLiteStore) ClaimReady(ctx context.Context, now time.Time) (Record, bo
 	}
 }
 
-func (s *SQLiteStore) MarkSubmitted(ctx context.Context, rec Record, operationID, operationLocation string, nextAttemptAt time.Time) (Record, error) {
+func (s *SpoolStore) MarkSubmitted(ctx context.Context, rec Record, operationID, operationLocation string, nextAttemptAt time.Time) (Record, error) {
 	return s.records.markSubmitted(ctx, rec, operationID, operationLocation, nextAttemptAt)
 }
 
-func (s *SQLiteStore) MarkRetry(ctx context.Context, rec Record, nextAttemptAt time.Time, lastErr *LastError) (Record, error) {
+func (s *SpoolStore) MarkRetry(ctx context.Context, rec Record, nextAttemptAt time.Time, lastErr *LastError) (Record, error) {
 	return s.records.markRetry(ctx, rec, nextAttemptAt, lastErr)
 }
 
-func (s *SQLiteStore) MarkSucceeded(ctx context.Context, rec Record) (Record, error) {
+func (s *SpoolStore) MarkSucceeded(ctx context.Context, rec Record) (Record, error) {
 	return s.records.markSucceeded(ctx, rec)
 }
 
-func (s *SQLiteStore) MarkDeadLetter(ctx context.Context, rec Record, lastErr *LastError) (Record, error) {
+func (s *SpoolStore) MarkDeadLetter(ctx context.Context, rec Record, lastErr *LastError) (Record, error) {
 	return s.records.markDeadLetter(ctx, rec, lastErr)
 }
 
-func (s *SQLiteStore) Recover(ctx context.Context, now time.Time) (RecoveryResult, error) {
+func (s *SpoolStore) Recover(ctx context.Context, now time.Time) (RecoveryResult, error) {
 	if err := ctx.Err(); err != nil {
 		return RecoveryResult{}, err
 	}
@@ -209,6 +207,6 @@ func classifyPayloadLoadError(recordID string, err error) error {
 	return wrapStoreError(fmt.Sprintf("load payload %q", recordID), err)
 }
 
-func (s *SQLiteStore) updateRecord(ctx context.Context, currentState State, updated Record) error {
+func (s *SpoolStore) updateRecord(ctx context.Context, currentState State, updated Record) error {
 	return s.records.updateRecord(ctx, currentState, updated)
 }
