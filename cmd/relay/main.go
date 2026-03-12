@@ -19,7 +19,9 @@ import (
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
 	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 	"github.com/undy-io/smtp-cloud-relay/internal/providers"
+	relaysvc "github.com/undy-io/smtp-cloud-relay/internal/relay"
 	smtprelay "github.com/undy-io/smtp-cloud-relay/internal/smtp"
+	"github.com/undy-io/smtp-cloud-relay/internal/spool"
 )
 
 func main() {
@@ -145,6 +147,16 @@ func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
 		Mode:                  email.SenderPolicyMode(cfg.SenderPolicyMode),
 		AllowedDomainPatterns: cfg.SenderAllowedDomains,
 	})
+}
+
+// buildRelayHandler constructs the durable-enqueue relay service without wiring it into SMTP yet.
+func buildRelayHandler(cfg config.Config, logger *slog.Logger, store spool.Store) (*relaysvc.Handler, error) {
+	senderPolicy, err := buildSenderPolicy(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return relaysvc.NewHandler(logger, senderPolicy, store, cfg.SMTPMaxInflightSends)
 }
 
 func newDirectSendMessageHandler(cfg config.Config, logger *slog.Logger, senderPolicy email.SenderPolicy, sendFunc func(context.Context, email.Message) error, sendTimeout time.Duration) smtprelay.MessageHandler {

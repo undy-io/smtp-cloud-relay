@@ -12,6 +12,7 @@ import (
 
 	"github.com/undy-io/smtp-cloud-relay/internal/config"
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/spool"
 )
 
 type stubDeliveryError struct {
@@ -252,6 +253,22 @@ func TestBuildMessageHandlerRejectsInvalidSenderPolicyGlob(t *testing.T) {
 	}
 }
 
+func TestBuildRelayHandlerConstructsHandlerWithoutProviders(t *testing.T) {
+	t.Parallel()
+
+	handler, err := buildRelayHandler(config.Config{
+		DeliveryMode:         "does-not-matter-here",
+		SMTPMaxInflightSends: 2,
+		SenderPolicyMode:     "rewrite",
+	}, testMainLogger(), stubRelayStore{})
+	if err != nil {
+		t.Fatalf("buildRelayHandler() error: %v", err)
+	}
+	if handler == nil {
+		t.Fatal("expected handler, got nil")
+	}
+}
+
 func testMainLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -264,4 +281,34 @@ func mustTestSenderPolicy(t *testing.T, opts email.SenderPolicyOptions) email.Se
 		t.Fatalf("NewSenderPolicy() error: %v", err)
 	}
 	return policy
+}
+
+type stubRelayStore struct{}
+
+func (stubRelayStore) Enqueue(context.Context, email.Message) (spool.Record, error) {
+	return spool.Record{ID: "test-record"}, nil
+}
+
+func (stubRelayStore) ClaimReady(context.Context, time.Time) (spool.Record, bool, error) {
+	panic("unexpected ClaimReady call")
+}
+
+func (stubRelayStore) MarkSubmitted(context.Context, spool.Record, string, string, time.Time) (spool.Record, error) {
+	panic("unexpected MarkSubmitted call")
+}
+
+func (stubRelayStore) MarkRetry(context.Context, spool.Record, time.Time, *spool.LastError) (spool.Record, error) {
+	panic("unexpected MarkRetry call")
+}
+
+func (stubRelayStore) MarkSucceeded(context.Context, spool.Record) (spool.Record, error) {
+	panic("unexpected MarkSucceeded call")
+}
+
+func (stubRelayStore) MarkDeadLetter(context.Context, spool.Record, *spool.LastError) (spool.Record, error) {
+	panic("unexpected MarkDeadLetter call")
+}
+
+func (stubRelayStore) Recover(context.Context, time.Time) (spool.RecoveryResult, error) {
+	panic("unexpected Recover call")
 }

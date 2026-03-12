@@ -934,7 +934,7 @@ Use this format when adding or revising tasks:
 #### Record Management
 
 ### SPOOL-002D — Add A Relay Enqueue Service
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-002C
@@ -961,6 +961,7 @@ Use this format when adding or revising tasks:
 - Implementation Notes:
   - This is the first relay-facing task in the spool stream. Do not couple it back to provider send logic.
   - Keep the service focused on durable acceptance, not background delivery.
+  - `relay.Handler` now owns sender policy, inflight gating, and durable enqueue only; it does not map SMTP errors or construct providers.
 - Later In:
   - SMTP ack contract switch in `SPOOL-002E`
   - enqueue-path contract tests in `SPOOL-002F`
