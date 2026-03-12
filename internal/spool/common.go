@@ -12,6 +12,11 @@ import (
 const (
 	spoolDirMode  = 0o700
 	spoolFileMode = 0o600
+	spoolDBFileName = "spool.db"
+
+	sqliteBusyTimeoutMS  = 5000
+	sqliteDriverName     = "sqlite"
+	sqliteJournalModeWAL = "WAL"
 )
 
 func isValidState(state State) bool {

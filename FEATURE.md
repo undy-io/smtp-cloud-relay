@@ -833,7 +833,7 @@ Use this format when adding or revising tasks:
   - config and deployment surface in `SPOOL-006`
 
 ### SPOOL-002B — Split SQLite Record State From Payload Handling
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-002A
@@ -871,6 +871,10 @@ Use this format when adding or revising tasks:
   - Prefer extracting a state-focused internal component rather than letting `SQLiteStore` continue to own every concern.
   - Keep SQLite as the source of truth for state and scheduling metadata.
   - This task owns the spool error contract. SMTP mapping remains outside the spool package.
+  - `SQLiteStore` remains the temporary top-level `Store` implementation in this phase, but now wraps:
+    - a SQLite-only record/state component
+    - `PayloadStore`
+  - Record-scoped corruption is wrapped as `RecordCorruptionError` at the spool wrapper layer; shared DB and payload-root failures are wrapped as `StoreError`.
 - Later In:
   - top-level store composition, ID generation, and bootstrap in `SPOOL-002C`
   - relay enqueue integration and SMTP mapping in `SPOOL-002D` through `SPOOL-002F`

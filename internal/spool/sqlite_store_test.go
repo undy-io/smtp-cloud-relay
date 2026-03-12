@@ -231,7 +231,10 @@ func TestSQLiteStoreClaimReadyRequeuesTransientPayloadLoadFailure(t *testing.T) 
 		t.Fatalf("expected no claimed record, got %#v", claimed)
 	}
 	if _, corrupt := AsPayloadCorruptionError(err); corrupt {
-		t.Fatalf("expected generic error, got corruption error: %v", err)
+		t.Fatalf("expected store error, got payload corruption error: %v", err)
+	}
+	if _, storeErr := AsStoreError(err); !storeErr {
+		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 
 	meta := readSQLiteMetadata(t, store, rec.ID)
@@ -445,7 +448,10 @@ func TestSQLiteStoreRecoverReturnsTransientPayloadLoadFailure(t *testing.T) {
 		t.Fatal("expected Recover() to fail")
 	}
 	if _, corrupt := AsPayloadCorruptionError(err); corrupt {
-		t.Fatalf("expected generic error, got corruption error: %v", err)
+		t.Fatalf("expected store error, got payload corruption error: %v", err)
+	}
+	if _, storeErr := AsStoreError(err); !storeErr {
+		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 
 	meta := readSQLiteMetadata(t, store, working.ID)
@@ -479,7 +485,10 @@ func TestSQLiteStoreClaimReadyMissingPayloadRootReturnsStoreError(t *testing.T) 
 		t.Fatalf("expected no claimed record, got %#v", claimed)
 	}
 	if _, corrupt := AsPayloadCorruptionError(err); corrupt {
-		t.Fatalf("expected generic error, got corruption error: %v", err)
+		t.Fatalf("expected store error, got payload corruption error: %v", err)
+	}
+	if _, storeErr := AsStoreError(err); !storeErr {
+		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 	meta := readSQLiteMetadata(t, store, rec.ID)
 	if meta.State != StateQueued {
@@ -513,7 +522,10 @@ func TestSQLiteStoreRecoverMissingPayloadRootReturnsStoreError(t *testing.T) {
 		t.Fatal("expected Recover() to fail")
 	}
 	if _, corrupt := AsPayloadCorruptionError(err); corrupt {
-		t.Fatalf("expected generic error, got corruption error: %v", err)
+		t.Fatalf("expected store error, got payload corruption error: %v", err)
+	}
+	if _, storeErr := AsStoreError(err); !storeErr {
+		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 	meta := readSQLiteMetadata(t, store, rec.ID)
 	if meta.State != StateQueued {
@@ -669,6 +681,8 @@ func TestScanMetadataRejectsNonCanonicalIDWithoutTrimming(t *testing.T) {
 
 	if _, err := scanMetadata(row); err == nil {
 		t.Fatal("expected scanMetadata() to reject non-canonical id")
+	} else if _, storeErr := AsStoreError(err); !storeErr {
+		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 }
 
@@ -686,6 +700,8 @@ func TestQueryAllIDsRejectsNonCanonicalIDWithoutTrimming(t *testing.T) {
 
 	if _, err := queryAllIDs(context.Background(), conn); err == nil {
 		t.Fatal("expected queryAllIDs() to reject non-canonical id")
+	} else if _, storeErr := AsStoreError(err); !storeErr {
+		t.Fatalf("expected StoreError, got %T: %v", err, err)
 	}
 }
 
