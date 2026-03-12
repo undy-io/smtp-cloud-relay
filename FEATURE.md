@@ -1050,7 +1050,7 @@ Use this format when adding or revising tasks:
   - env and Helm configuration in `SPOOL-006`
 
 ### SPOOL-003 — Introduce Submit + Poll Alongside Temporary Send Compatibility
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On: SPOOL-002D
 - Goal: introduce an async provider contract that supports both long-running and immediate-completion providers without breaking the still-live direct-send SMTP path during the transition.
@@ -1058,12 +1058,13 @@ Use this format when adding or revising tasks:
   - `internal/email/submission.go`
 - Touch:
   - `internal/email/provider.go`
+  - `internal/providers/factory_test.go`
   - `internal/providers/acs/provider.go`
   - `internal/providers/acs/provider_test.go`
   - `internal/providers/noop/provider.go`
+  - `internal/providers/noop/provider_test.go`
   - `internal/providers/ses/provider.go`
   - `internal/providers/ses/provider_test.go`
-  - `internal/providers/factory.go`
 - Remove: none
 - Symbols:
   - `Provider.Submit(ctx, msg, operationID string) (SubmissionResult, error)`
@@ -1150,7 +1151,7 @@ Use this format when adding or revising tasks:
   - env and Helm configuration in `SPOOL-006`
 
 ### SPOOL-004A — Implement ACS Submit + Poll Using Customer Operation IDs
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-003
@@ -1188,7 +1189,7 @@ Use this format when adding or revising tasks:
   - recipient delivery-event correlation in future work, not this task
 
 ### SPOOL-004B — Implement SES Submit With Immediate Completion Semantics
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-003

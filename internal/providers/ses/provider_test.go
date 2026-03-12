@@ -268,6 +268,57 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 }
 
+func TestSubmitReturnsImmediateSuccess(t *testing.T) {
+	client := &stubSendEmailClient{
+		out: &sesv2.SendEmailOutput{MessageId: aws.String("msg-123")},
+	}
+
+	p, err := NewProvider("us-gov-west-1", "no-reply@example.com", "", "relay-config", testLogger(), WithClient(client))
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	result, err := p.Submit(context.Background(), email.Message{
+		To:       []string{"one@example.com"},
+		Subject:  "Test Subject",
+		TextBody: "Text body",
+	}, "ignored-operation-id")
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if result.State != email.SubmissionStateSucceeded {
+		t.Fatalf("unexpected state: %q", result.State)
+	}
+	if result.ProviderMessageID != "msg-123" {
+		t.Fatalf("unexpected provider message id: %q", result.ProviderMessageID)
+	}
+	if result.OperationID != "" {
+		t.Fatalf("expected empty operation id, got %q", result.OperationID)
+	}
+	if result.OperationLocation != "" {
+		t.Fatalf("expected empty operation location, got %q", result.OperationLocation)
+	}
+}
+
+func TestPollReturnsSucceeded(t *testing.T) {
+	client := &stubSendEmailClient{}
+	p, err := NewProvider("us-gov-west-1", "no-reply@example.com", "", "", testLogger(), WithClient(client))
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	status, err := p.Poll(context.Background(), "op-123")
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if status.State != email.SubmissionStateSucceeded {
+		t.Fatalf("unexpected state: %q", status.State)
+	}
+	if status.OperationID != "op-123" {
+		t.Fatalf("unexpected operation id: %q", status.OperationID)
+	}
+}
+
 func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 	client := &stubSendEmailClient{
 		out: &sesv2.SendEmailOutput{MessageId: aws.String("msg-123")},

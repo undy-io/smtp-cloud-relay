@@ -48,6 +48,8 @@ type Provider struct {
 	logger           *slog.Logger
 }
 
+var _ email.Provider = (*Provider)(nil)
+
 type providerOptions struct {
 	httpClient      *http.Client
 	retryAttempts   int
@@ -270,9 +272,19 @@ func validateEndpoint(raw string) (string, error) {
 }
 
 func (p *Provider) Send(ctx context.Context, msg email.Message) error {
+	result, err := p.Submit(ctx, msg, "")
+	if err != nil {
+		return err
+	}
+	return compatibilitySendResult(result)
+}
+
+// Submit treats SES SendEmail acceptance as terminal submission success for the
+// v1 async provider contract.
+func (p *Provider) Submit(ctx context.Context, msg email.Message, _ string) (email.SubmissionResult, error) {
 	raw, recipients, replyTo, err := buildRawMessage(p.sender, msg)
 	if err != nil {
-		return permanentSendError(err)
+		return email.SubmissionResult{}, permanentSendError(err)
 	}
 
 	input := &sesv2.SendEmailInput{
@@ -293,11 +305,25 @@ func (p *Provider) Send(ctx context.Context, msg email.Message) error {
 
 	out, err := p.client.SendEmail(ctx, input)
 	if err != nil {
-		return classifySendError(err)
+		return email.SubmissionResult{}, classifySendError(err)
 	}
 
-	p.logger.Info("email accepted by ses", "message_id", aws.ToString(out.MessageId), "to_count", len(recipients))
-	return nil
+	messageID := aws.ToString(out.MessageId)
+	p.logger.Info("email accepted by ses", "message_id", messageID, "to_count", len(recipients))
+	return email.SubmissionResult{
+		State:             email.SubmissionStateSucceeded,
+		ProviderMessageID: messageID,
+	}, nil
+}
+
+// Poll exists only to satisfy the shared async provider interface. SES is not
+// modeled as a long-running provider in this phase, so Poll returns immediate
+// terminal success for the requested operation identifier.
+func (p *Provider) Poll(_ context.Context, operationID string) (email.SubmissionStatus, error) {
+	return email.SubmissionStatus{
+		OperationID: strings.TrimSpace(operationID),
+		State:       email.SubmissionStateSucceeded,
+	}, nil
 }
 
 func classifySendError(err error) *SendError {
@@ -324,6 +350,23 @@ func classifySendError(err error) *SendError {
 	}
 
 	return temporarySendError(0, err)
+}
+
+func compatibilitySendResult(result email.SubmissionResult) error {
+	switch result.State {
+	case email.SubmissionStateRunning, email.SubmissionStateSucceeded:
+		return nil
+	case email.SubmissionStateFailed, email.SubmissionStateCanceled:
+		if result.Failure != nil {
+			sendErr := permanentSendError(errors.New(result.Failure.Message))
+			sendErr.StatusCode = result.Failure.StatusCode
+			sendErr.Retryable = result.Failure.Temporary
+			return sendErr
+		}
+		return permanentSendError(fmt.Errorf("ses submission ended in %q state", result.State))
+	default:
+		return permanentSendError(fmt.Errorf("unknown ses submission state %q", result.State))
+	}
 }
 
 func buildRawMessage(sender string, msg email.Message) ([]byte, []string, []string, error) {

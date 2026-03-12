@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"net/mail"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,13 +27,14 @@ import (
 )
 
 const (
-	emailSendPath               = "/emails:send"
-	emailSendAPIVersion         = "2023-03-31"
-	defaultRetryAttempts        = 3
-	maxRetryAttempts            = 10
-	defaultRetryBaseDelay       = 1 * time.Second
-	maxResponseBodyBytes  int64 = 8 << 10
-	maxDuration                 = time.Duration(1<<63 - 1)
+	emailSendPath                  = "/emails:send"
+	emailOperationPathPrefix       = "/emails/operations/"
+	emailSendAPIVersion            = "2023-03-31"
+	defaultRetryAttempts           = 3
+	maxRetryAttempts               = 10
+	defaultRetryBaseDelay          = 1 * time.Second
+	maxResponseBodyBytes     int64 = 8 << 10
+	maxDuration                    = time.Duration(1<<63 - 1)
 )
 
 type Provider struct {
@@ -47,6 +50,8 @@ type Provider struct {
 	transportConfig    HTTPTransportConfig
 	hasTransportConfig bool
 }
+
+var _ email.Provider = (*Provider)(nil)
 
 // Option mutates Provider behavior during initialization.
 type Option func(*Provider) error
@@ -164,6 +169,17 @@ type attachmentDTO struct {
 	Name            string `json:"name"`
 	ContentType     string `json:"contentType"`
 	ContentInBase64 string `json:"contentInBase64"`
+}
+
+type operationResponseDTO struct {
+	ID     string             `json:"id"`
+	Status string             `json:"status"`
+	Error  *operationErrorDTO `json:"error,omitempty"`
+}
+
+type operationErrorDTO struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // SendError contains detailed provider failure information.
@@ -292,31 +308,44 @@ func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger,
 }
 
 func (p *Provider) Send(ctx context.Context, msg email.Message) error {
+	result, err := p.Submit(ctx, msg, "")
+	if err != nil {
+		return err
+	}
+	return compatibilitySendResult(result)
+}
+
+func (p *Provider) Submit(ctx context.Context, msg email.Message, operationID string) (email.SubmissionResult, error) {
 	body, err := buildSendRequest(p.sender, msg)
 	if err != nil {
-		return permanentSendError("", 1, 1, err)
+		return email.SubmissionResult{}, permanentSendError("", 1, 1, err)
 	}
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return permanentSendError("", 1, 1, fmt.Errorf("marshal acs request: %w", err))
+		return email.SubmissionResult{}, permanentSendError("", 1, 1, fmt.Errorf("marshal acs request: %w", err))
 	}
 
 	requestID, err := newRequestID()
 	if err != nil {
-		return permanentSendError("", 1, 1, fmt.Errorf("generate request id: %w", err))
+		return email.SubmissionResult{}, permanentSendError("", 1, 1, fmt.Errorf("generate request id: %w", err))
 	}
 
+	operationID = strings.TrimSpace(operationID)
+	var lastResult email.SubmissionResult
 	var lastErr *SendError
 	for attempt := 1; attempt <= p.retryAttempts; attempt++ {
-		attemptErr := p.sendOnce(ctx, requestID, attempt, bodyBytes)
+		attemptResult, attemptErr := p.submitOnce(ctx, requestID, operationID, attempt, bodyBytes)
 		if attemptErr == nil {
-			return nil
+			lastResult = attemptResult
+			lastResult.OperationID = operationID
+			lastResult.State = email.SubmissionStateRunning
+			return lastResult, nil
 		}
 
 		lastErr = attemptErr
 		if !attemptErr.Retryable || attempt == p.retryAttempts {
-			return attemptErr
+			return email.SubmissionResult{}, attemptErr
 		}
 
 		backoff := retryBackoff(p.retryBaseDelay, attempt)
@@ -340,12 +369,56 @@ func (p *Provider) Send(ctx context.Context, msg email.Message) error {
 
 		select {
 		case <-ctx.Done():
-			return permanentSendError(requestID, attempt, p.retryAttempts, ctx.Err())
+			return email.SubmissionResult{}, permanentSendError(requestID, attempt, p.retryAttempts, ctx.Err())
 		case <-time.After(backoff):
 		}
 	}
 
-	return lastErr
+	return email.SubmissionResult{}, lastErr
+}
+
+func (p *Provider) Poll(ctx context.Context, operationID string) (email.SubmissionStatus, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return email.SubmissionStatus{}, permanentSendError("", 1, 1, fmt.Errorf("acs poll operation id cannot be empty"))
+	}
+
+	requestID, err := newRequestID()
+	if err != nil {
+		return email.SubmissionStatus{}, permanentSendError(operationID, 1, 1, fmt.Errorf("generate request id: %w", err))
+	}
+
+	resp, sendErr := p.sendAuthorizedRequest(ctx, requestID, "", http.MethodGet, p.operationTarget(operationID), nil, 1)
+	if sendErr != nil {
+		return email.SubmissionStatus{}, sendErr
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBodyBytes))
+		return email.SubmissionStatus{}, statusSendError(requestID, 1, 1, resp.StatusCode)
+	}
+
+	body, err := decodeOperationResponse(resp.Body)
+	if err != nil {
+		return email.SubmissionStatus{}, permanentSendError(requestID, 1, 1, fmt.Errorf("decode acs poll response: %w", err))
+	}
+
+	state, err := mapACSOperationState(body.Status)
+	if err != nil {
+		return email.SubmissionStatus{}, permanentSendError(requestID, 1, 1, err)
+	}
+
+	status := email.SubmissionStatus{
+		OperationID:       operationID,
+		RetryAfter:        parseRetryAfter(resp.Header.Get("retry-after")),
+		State:             state,
+		ProviderMessageID: strings.TrimSpace(body.ID),
+	}
+	if failure := submissionFailureForState(state, body.Error); failure != nil {
+		status.Failure = failure
+	}
+	return status, nil
 }
 
 func retryBackoff(base time.Duration, attempt int) time.Duration {
@@ -448,48 +521,152 @@ func normalizeReplyToRecipients(addresses []string) []recipient {
 	return out
 }
 
-func (p *Provider) sendOnce(ctx context.Context, requestID string, attempt int, body []byte) *SendError {
+func (p *Provider) submitOnce(ctx context.Context, requestID, operationID string, attempt int, body []byte) (email.SubmissionResult, *SendError) {
+	resp, sendErr := p.sendAuthorizedRequest(ctx, requestID, operationID, http.MethodPost, p.sendTarget(), body, attempt)
+	if sendErr != nil {
+		return email.SubmissionResult{}, sendErr
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBodyBytes))
+		return email.SubmissionResult{}, statusSendError(requestID, attempt, p.retryAttempts, resp.StatusCode)
+	}
+
+	bodyResult, err := decodeOperationResponse(resp.Body)
+	if err != nil {
+		return email.SubmissionResult{}, permanentSendError(requestID, attempt, p.retryAttempts, fmt.Errorf("decode acs submit response: %w", err))
+	}
+
+	operationLocation := resp.Header.Get("operation-location")
+	retryAfter := parseRetryAfter(resp.Header.Get("retry-after"))
+	// ACS operation success means provider-side submission success, not final recipient delivery.
+	p.logger.Info(
+		"email accepted by acs",
+		"request_id",
+		requestID,
+		"operation_location",
+		operationLocation,
+		"provider_message_id",
+		strings.TrimSpace(bodyResult.ID),
+	)
+	return email.SubmissionResult{
+		OperationLocation: strings.TrimSpace(operationLocation),
+		RetryAfter:        retryAfter,
+		State:             email.SubmissionStateRunning,
+		ProviderMessageID: strings.TrimSpace(bodyResult.ID),
+	}, nil
+}
+
+func (p *Provider) sendTarget() *url.URL {
 	target := *p.endpoint
 	target.Path = strings.TrimRight(target.Path, "/") + emailSendPath
 
 	q := target.Query()
 	q.Set("api-version", emailSendAPIVersion)
 	target.RawQuery = q.Encode()
+	return &target
+}
 
-	hash := sha256.Sum256(body)
-	contentHash := base64.StdEncoding.EncodeToString(hash[:])
+func (p *Provider) operationTarget(operationID string) *url.URL {
+	target := *p.endpoint
+	target.Path = strings.TrimRight(target.Path, "/") + emailOperationPathPrefix + url.PathEscape(operationID)
+
+	q := target.Query()
+	q.Set("api-version", emailSendAPIVersion)
+	target.RawQuery = q.Encode()
+	return &target
+}
+
+func (p *Provider) sendAuthorizedRequest(ctx context.Context, requestID, operationID, method string, target *url.URL, body []byte, attempt int) (*http.Response, *SendError) {
+	contentHash := hashRequestBody(body)
 	xmsDate := time.Now().UTC().Format(http.TimeFormat)
 
-	signature, err := p.buildSignature(http.MethodPost, target.RequestURI(), xmsDate, target.Host, contentHash)
+	signature, err := p.buildSignature(method, target.RequestURI(), xmsDate, target.Host, contentHash)
 	if err != nil {
-		return permanentSendError(requestID, attempt, p.retryAttempts, fmt.Errorf("build authorization header: %w", err))
+		return nil, permanentSendError(requestID, attempt, p.retryAttempts, fmt.Errorf("build authorization header: %w", err))
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return permanentSendError(requestID, attempt, p.retryAttempts, fmt.Errorf("build request: %w", err))
+		return nil, permanentSendError(requestID, attempt, p.retryAttempts, fmt.Errorf("build request: %w", err))
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("x-ms-date", xmsDate)
 	req.Header.Set("x-ms-content-sha256", contentHash)
 	req.Header.Set("Authorization", signature)
 	req.Header.Set("x-ms-client-request-id", requestID)
+	if strings.TrimSpace(operationID) != "" {
+		req.Header.Set("Operation-Id", strings.TrimSpace(operationID))
+	}
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return temporarySendError(requestID, attempt, p.retryAttempts, 0, err)
+		return nil, temporarySendError(requestID, attempt, p.retryAttempts, 0, err)
 	}
-	defer resp.Body.Close()
+	return resp, nil
+}
 
-	if resp.StatusCode != http.StatusAccepted {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBodyBytes))
-		return statusSendError(requestID, attempt, p.retryAttempts, resp.StatusCode)
+func hashRequestBody(body []byte) string {
+	hash := sha256.Sum256(body)
+	return base64.StdEncoding.EncodeToString(hash[:])
+}
+
+func decodeOperationResponse(r io.Reader) (operationResponseDTO, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxResponseBodyBytes))
+	if err != nil {
+		return operationResponseDTO{}, err
+	}
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return operationResponseDTO{}, nil
 	}
 
-	operationLocation := resp.Header.Get("operation-location")
-	p.logger.Info("email accepted by acs", "request_id", requestID, "operation_location", operationLocation)
-	return nil
+	var result operationResponseDTO
+	if err := json.Unmarshal(body, &result); err != nil {
+		return operationResponseDTO{}, err
+	}
+	return result, nil
+}
+
+func mapACSOperationState(raw string) (email.SubmissionState, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "running", "notstarted":
+		return email.SubmissionStateRunning, nil
+	case "succeeded":
+		return email.SubmissionStateSucceeded, nil
+	case "failed":
+		return email.SubmissionStateFailed, nil
+	case "canceled", "cancelled":
+		return email.SubmissionStateCanceled, nil
+	default:
+		return "", fmt.Errorf("unsupported acs operation status %q", raw)
+	}
+}
+
+func submissionFailureForState(state email.SubmissionState, detail *operationErrorDTO) *email.SubmissionFailure {
+	if state != email.SubmissionStateFailed && state != email.SubmissionStateCanceled {
+		return nil
+	}
+
+	message := ""
+	if detail != nil {
+		message = strings.TrimSpace(detail.Message)
+		if message == "" {
+			message = strings.TrimSpace(detail.Code)
+		}
+	}
+	if message == "" {
+		message = fmt.Sprintf("acs operation ended in %q state", state)
+	}
+
+	return &email.SubmissionFailure{
+		Message:   message,
+		Temporary: false,
+	}
 }
 
 func (p *Provider) buildSignature(method, pathAndQuery, xmsDate, host, contentHash string) (string, error) {
@@ -582,6 +759,48 @@ func newRequestID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func parseRetryAfter(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+
+	when, err := http.ParseTime(raw)
+	if err != nil {
+		return 0
+	}
+
+	delay := time.Until(when)
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+func compatibilitySendResult(result email.SubmissionResult) error {
+	switch result.State {
+	case email.SubmissionStateRunning, email.SubmissionStateSucceeded:
+		return nil
+	case email.SubmissionStateFailed, email.SubmissionStateCanceled:
+		if result.Failure != nil {
+			err := errors.New(result.Failure.Message)
+			if result.Failure.Temporary {
+				return temporarySendError("", 1, 1, result.Failure.StatusCode, err)
+			}
+			sendErr := permanentSendError("", 1, 1, err)
+			sendErr.StatusCode = result.Failure.StatusCode
+			return sendErr
+		}
+		return permanentSendError("", 1, 1, fmt.Errorf("acs submission ended in %q state", result.State))
+	default:
+		return permanentSendError("", 1, 1, fmt.Errorf("unknown acs submission state %q", result.State))
+	}
 }
 
 func appendExtraCAPEM(p *Provider, pemBytes []byte) error {

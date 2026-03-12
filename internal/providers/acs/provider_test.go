@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -286,6 +287,252 @@ func TestSendMapsPayload(t *testing.T) {
 	}
 	if string(a1) != "hello default" {
 		t.Fatalf("unexpected attachment[1] data: %q", string(a1))
+	}
+}
+
+func TestSubmitReturnsRunningOperation(t *testing.T) {
+	var method, path, apiVersion, requestID, operationID string
+
+	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
+	p.httpClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			method = req.Method
+			path = req.URL.Path
+			apiVersion = req.URL.Query().Get("api-version")
+			requestID = req.Header.Get("x-ms-client-request-id")
+			operationID = req.Header.Get("Operation-Id")
+
+			resp := newResponse(req, http.StatusAccepted, `{"id":"acs-msg-123","status":"Running"}`)
+			resp.Header.Set("operation-location", "https://example.communication.azure.us/emails/operations/op-123")
+			resp.Header.Set("retry-after", "7")
+			return resp, nil
+		}),
+	}
+
+	result, err := p.Submit(context.Background(), email.Message{
+		To:       []string{"one@example.com"},
+		Subject:  "Test Subject",
+		TextBody: "Text body",
+	}, "relay-op-123")
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if method != http.MethodPost {
+		t.Fatalf("unexpected method: %q", method)
+	}
+	if path != emailSendPath {
+		t.Fatalf("unexpected path: %q", path)
+	}
+	if apiVersion != emailSendAPIVersion {
+		t.Fatalf("unexpected api-version: %q", apiVersion)
+	}
+	if requestID == "" {
+		t.Fatal("expected non-empty x-ms-client-request-id")
+	}
+	if operationID != "relay-op-123" {
+		t.Fatalf("unexpected Operation-Id: %q", operationID)
+	}
+	if result.State != email.SubmissionStateRunning {
+		t.Fatalf("unexpected state: %q", result.State)
+	}
+	if result.OperationID != "relay-op-123" {
+		t.Fatalf("unexpected operation id: %q", result.OperationID)
+	}
+	if result.OperationLocation != "https://example.communication.azure.us/emails/operations/op-123" {
+		t.Fatalf("unexpected operation location: %q", result.OperationLocation)
+	}
+	if result.RetryAfter != 7*time.Second {
+		t.Fatalf("unexpected retry-after: %s", result.RetryAfter)
+	}
+	if result.ProviderMessageID != "acs-msg-123" {
+		t.Fatalf("unexpected provider message id: %q", result.ProviderMessageID)
+	}
+}
+
+func TestSubmitOmitsOperationIDHeaderWhenEmpty(t *testing.T) {
+	var operationID string
+
+	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
+	p.httpClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			operationID = req.Header.Get("Operation-Id")
+			return newResponse(req, http.StatusAccepted, `{"id":"acs-msg-123","status":"Running"}`), nil
+		}),
+	}
+
+	result, err := p.Submit(context.Background(), email.Message{
+		To:       []string{"one@example.com"},
+		Subject:  "Test Subject",
+		TextBody: "Text body",
+	}, "")
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if operationID != "" {
+		t.Fatalf("expected empty Operation-Id header, got %q", operationID)
+	}
+	if result.OperationID != "" {
+		t.Fatalf("expected empty operation id, got %q", result.OperationID)
+	}
+}
+
+func TestPollMapsStatuses(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantState    email.SubmissionState
+		wantFailure  bool
+		wantMessage  string
+		wantRetry    time.Duration
+		wantProvider string
+	}{
+		{
+			name:         "running",
+			body:         `{"id":"acs-msg-1","status":"Running"}`,
+			wantState:    email.SubmissionStateRunning,
+			wantRetry:    5 * time.Second,
+			wantProvider: "acs-msg-1",
+		},
+		{
+			name:         "not started",
+			body:         `{"id":"acs-msg-2","status":"NotStarted"}`,
+			wantState:    email.SubmissionStateRunning,
+			wantProvider: "acs-msg-2",
+		},
+		{
+			name:         "succeeded",
+			body:         `{"id":"acs-msg-3","status":"Succeeded"}`,
+			wantState:    email.SubmissionStateSucceeded,
+			wantProvider: "acs-msg-3",
+		},
+		{
+			name:         "failed",
+			body:         `{"id":"acs-msg-4","status":"Failed","error":{"message":"permanent failure"}}`,
+			wantState:    email.SubmissionStateFailed,
+			wantFailure:  true,
+			wantMessage:  "permanent failure",
+			wantProvider: "acs-msg-4",
+		},
+		{
+			name:         "canceled",
+			body:         `{"id":"acs-msg-5","status":"Canceled","error":{"code":"CanceledByProvider"}}`,
+			wantState:    email.SubmissionStateCanceled,
+			wantFailure:  true,
+			wantMessage:  "CanceledByProvider",
+			wantProvider: "acs-msg-5",
+		},
+		{
+			name:         "cancelled spelling",
+			body:         `{"id":"acs-msg-6","status":"Cancelled","error":{"message":"cancelled"}}`,
+			wantState:    email.SubmissionStateCanceled,
+			wantFailure:  true,
+			wantMessage:  "cancelled",
+			wantProvider: "acs-msg-6",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var method, path, apiVersion, requestID string
+
+			p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
+			p.httpClient = &http.Client{
+				Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					method = req.Method
+					path = req.URL.Path
+					apiVersion = req.URL.Query().Get("api-version")
+					requestID = req.Header.Get("x-ms-client-request-id")
+
+					if req.Header.Get("Authorization") == "" {
+						t.Errorf("Authorization header is missing")
+					}
+					if req.Header.Get("x-ms-date") == "" {
+						t.Errorf("x-ms-date header is missing")
+					}
+					if req.Header.Get("x-ms-content-sha256") == "" {
+						t.Errorf("x-ms-content-sha256 header is missing")
+					}
+
+					bodyBytes, err := io.ReadAll(req.Body)
+					if err != nil {
+						t.Fatalf("read request body: %v", err)
+					}
+					if len(bodyBytes) != 0 {
+						t.Fatalf("expected empty GET body, got %q", string(bodyBytes))
+					}
+
+					resp := newResponse(req, http.StatusOK, tc.body)
+					if tc.wantRetry > 0 {
+						resp.Header.Set("retry-after", strconv.Itoa(int(tc.wantRetry/time.Second)))
+					}
+					return resp, nil
+				}),
+			}
+
+			result, err := p.Poll(context.Background(), "relay-op-123")
+			if err != nil {
+				t.Fatalf("Poll() error = %v", err)
+			}
+			if method != http.MethodGet {
+				t.Fatalf("unexpected method: %q", method)
+			}
+			if path != emailOperationPathPrefix+"relay-op-123" {
+				t.Fatalf("unexpected path: %q", path)
+			}
+			if apiVersion != emailSendAPIVersion {
+				t.Fatalf("unexpected api-version: %q", apiVersion)
+			}
+			if requestID == "" {
+				t.Fatal("expected non-empty x-ms-client-request-id")
+			}
+			if result.OperationID != "relay-op-123" {
+				t.Fatalf("unexpected operation id: %q", result.OperationID)
+			}
+			if result.State != tc.wantState {
+				t.Fatalf("unexpected state: got %q want %q", result.State, tc.wantState)
+			}
+			if result.RetryAfter != tc.wantRetry {
+				t.Fatalf("unexpected retry-after: got %s want %s", result.RetryAfter, tc.wantRetry)
+			}
+			if result.ProviderMessageID != tc.wantProvider {
+				t.Fatalf("unexpected provider message id: got %q want %q", result.ProviderMessageID, tc.wantProvider)
+			}
+			if tc.wantFailure {
+				if result.Failure == nil {
+					t.Fatal("expected failure metadata")
+				}
+				if result.Failure.Message != tc.wantMessage {
+					t.Fatalf("unexpected failure message: got %q want %q", result.Failure.Message, tc.wantMessage)
+				}
+				if result.Failure.Temporary {
+					t.Fatal("expected terminal failure to be permanent")
+				}
+			} else if result.Failure != nil {
+				t.Fatalf("unexpected failure metadata: %#v", result.Failure)
+			}
+		})
+	}
+}
+
+func TestPollRejectsEmptyOperationID(t *testing.T) {
+	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
+
+	_, err := p.Poll(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var deliveryErr email.DeliveryError
+	if !errors.As(err, &deliveryErr) {
+		t.Fatalf("expected email.DeliveryError, got %T", err)
+	}
+	if deliveryErr.ProviderName() != "acs" {
+		t.Fatalf("unexpected provider name: %q", deliveryErr.ProviderName())
+	}
+	if deliveryErr.Temporary() {
+		t.Fatalf("expected temporary=false, got true")
+	}
+	if !strings.Contains(err.Error(), "operation id cannot be empty") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

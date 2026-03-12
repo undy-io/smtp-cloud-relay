@@ -34,6 +34,20 @@ func TestBuildNoop(t *testing.T) {
 	if err := rt.Provider.Send(context.Background(), email.Message{To: []string{"to@example.com"}}); err != nil {
 		t.Fatalf("Send() error: %v", err)
 	}
+	result, err := rt.Provider.Submit(context.Background(), email.Message{To: []string{"to@example.com"}}, "noop-op")
+	if err != nil {
+		t.Fatalf("Submit() error: %v", err)
+	}
+	if result.State != email.SubmissionStateSucceeded {
+		t.Fatalf("unexpected submit state: %q", result.State)
+	}
+	status, err := rt.Provider.Poll(context.Background(), "noop-op")
+	if err != nil {
+		t.Fatalf("Poll() error: %v", err)
+	}
+	if status.State != email.SubmissionStateSucceeded {
+		t.Fatalf("unexpected poll state: %q", status.State)
+	}
 }
 
 func TestBuildACS(t *testing.T) {
