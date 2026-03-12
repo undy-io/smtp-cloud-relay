@@ -23,8 +23,8 @@ Use this file as the source of truth for active feature work until the relay mee
   - `go test ./...` is expected to pass
   - `DELIVERY_MODE=ses` is supported alongside `acs` and `noop`
   - SMTP startup, readiness, shutdown, and provider error mapping are implemented
+  - `SENDER-001` through `SENDER-003` are complete
 - The major missing base requirements are:
-  - deterministic sender handling
   - durable spool + retry
   - idempotent / safe async delivery flow
   - real metrics
@@ -71,8 +71,21 @@ Use this format when adding or revising tasks:
 
 ## Recommended Execution Order
 
-- Start with `SENDER-001` through `SENDER-003` so sender behavior is deterministic before durable async delivery is added.
-- Finish `SPOOL-001` through `SPOOL-006` as one coordinated stream.
+- The sender stream is complete. Do not reopen it unless a later task has a concrete regression or new requirement.
+- Finish the restructured spool stream in this order:
+  - `SPOOL-002A`
+  - `SPOOL-002B`
+  - `SPOOL-002C`
+  - `SPOOL-002D`
+  - `SPOOL-003`
+  - `SPOOL-004A`
+  - `SPOOL-004B`
+  - `SPOOL-005A`
+  - `SPOOL-005B`
+  - `SPOOL-002E`
+  - `SPOOL-003A`
+  - `SPOOL-002F`
+  - `SPOOL-006`
 - Finish `OBS-001` and `OBS-002` after the spool exists.
 - Finish `QA-001` and `DOC-001` last.
 
@@ -436,30 +449,36 @@ Use this format when adding or revising tasks:
 
 ## Durable Spool + Idempotency
 
-### SPOOL-001 — Introduce Filesystem Spool Types And Store
-- Status: planned
+### SPOOL-001 — Introduce Hybrid SQLite State Store And Filesystem Payload Store
+- Status: done
 - Priority: P0
 - Depends On: CORE-004
-- Goal: create a durable local queue before changing SMTP acceptance semantics.
+- Goal: create the durable spool foundation with SQLite-owned state and purpose-built filesystem payload storage before changing SMTP acceptance semantics.
 - Create:
   - `internal/spool/types.go`
   - `internal/spool/store.go`
-  - `internal/spool/fsstore.go`
-  - `internal/spool/fsstore_test.go`
+  - `internal/spool/payload_store.go`
+  - `internal/spool/payload_store_test.go`
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/sqlite_store_test.go`
+  - `internal/spool/schema.go`
 - Touch:
-  - `internal/config/config.go`
-  - `internal/config/config_test.go`
+  - `FEATURE.md`
+  - `go.mod`
+  - `go.sum`
 - Remove: none
 - Symbols:
   - `Record`
   - `State`
   - `Store`
-  - `FSStore`
+  - `PayloadStore`
+  - `SQLiteStore`
+  - `RecoveryResult`
 - Acceptance:
-  - spool records are persisted as one JSON file per item under state subdirectories inside `SPOOL_DIR`
-  - `Record` includes:
+  - spool state lives in `spool.db`, not in state-named directories
+  - message bodies and attachment bytes live on disk under `payloads/<record-id>/...`
+  - SQLite persists the record state needed for:
     - `ID`
-    - `Message`
     - `State`
     - `Attempt`
     - `NextAttemptAt`
@@ -468,6 +487,13 @@ Use this format when adding or revising tasks:
     - `LastError`
     - `CreatedAt`
     - `UpdatedAt`
+  - the record ID is the payload key; SQLite does not store a separate payload-path column
+  - `ClaimReady` ordering is transactional and uses:
+    - `state`
+    - `next_attempt_at`
+    - `created_at`
+    - `id`
+  - attachment bytes are not stored in SQLite
   - the store supports:
     - `Enqueue`
     - `ClaimReady`
@@ -477,84 +503,580 @@ Use this format when adding or revising tasks:
     - `MarkDeadLetter`
     - `Recover`
 - Implementation Notes:
-  - Define these directories under `SPOOL_DIR`:
-    - `queued`
-    - `working`
-    - `submitted`
-    - `succeeded`
-    - `dead-letter`
-  - Use one JSON file per record: `<state>/<id>.json`.
+  - Use `database/sql` with a pure-Go SQLite driver such as `modernc.org/sqlite`.
+  - Apply SQLite durability settings at connection setup:
+    - `journal_mode=WAL`
+    - `synchronous=FULL`
+    - `foreign_keys=ON`
+    - explicit `busy_timeout`
+  - Use `BEGIN IMMEDIATE` or equivalent transactional locking in claim/transition paths.
+  - Define this layout under the provided spool root path:
+    - `spool.db`
+    - `payloads/<record-id>/message.json`
+    - `payloads/<record-id>/attachments/<n>.bin`
+    - `payload-orphans/`
+  - `message.json` should store normalized message fields plus attachment metadata and relative file paths, not attachment bytes in SQLite.
   - `Enqueue` should:
     - assign a new UUID
-    - write a temp file in the target directory
-    - `fsync` the file
-    - rename it into place
-    - `fsync` the directory
-  - State transitions should be implemented as atomic rename-based moves within the spool root.
-  - `ClaimReady` should move one eligible record from `queued` to `working`.
-  - `Recover` should move stale `working` records back to `queued` and leave `submitted` records in place for polling recovery.
-  - `LastError` should be a structured object, not just a string. Include message, provider, temporary flag, and timestamp.
+    - write and `fsync` the payload directory first
+    - insert the SQLite row in a transaction second
+    - best-effort clean up the payload directory if the SQLite insert fails
+  - `ClaimReady` should select and transition one eligible row atomically, then load payload files before returning the `Record`.
+  - `Recover` should:
+    - move stale `working` rows back to `queued`
+    - keep `submitted` rows in place for polling recovery
+    - mark rows with missing or corrupt payloads as `dead-letter`
+    - move orphan payload directories with no matching database row into `payload-orphans/`
+  - `RecoveryResult` now also reports:
+    - `DeadLettered`
+    - `OrphanedPayloads`
+  - Do not add `SPOOL_DIR`, `SPOOL_POLL_INTERVAL_MS`, or Helm persistence wiring in this task; that stays in `SPOOL-006`.
 
-### SPOOL-002 — Accept SMTP After Durable Enqueue, Not After Provider Send
-- Status: planned
+### SPOOL-001A — Replace The Filesystem-State Prototype With Purpose-Built Hybrid Store Components
+- Status: done
+- Priority: P0
+- Depends On: SPOOL-001
+- Goal: remove the JSON-per-state filesystem prototype so later spool work cannot accidentally build on the wrong persistence model.
+- Create: none
+- Touch:
+  - `internal/spool/store.go`
+  - `internal/spool/*_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove:
+  - `internal/spool/fsstore.go`
+  - `internal/spool/fsstore_test.go`
+  - `FSStore`
+  - JSON-per-state filesystem records as the source of truth for spool state
+- Symbols:
+  - remove `FSStore`
+  - keep `PayloadStore`
+  - keep `SQLiteStore`
+- Acceptance:
+  - there is no compiled `FSStore` implementation left in the tree
+  - spool tests target the hybrid SQLite state store plus payload store only
+  - no backlog item, comment, or handoff document tells developers to extend the removed JSON-per-state prototype
+- Implementation Notes:
+  - This is an explicit replacement task, not a refactor-in-place task.
+  - Delete the old implementation once the hybrid store passes its tests; do not keep two competing spool state backends alive.
+
+### SPOOL-001B — Harden The Hybrid Spool Foundation
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-001
+  - SPOOL-001A
+- Goal: close the storage-layer review gaps before SMTP enqueue and async worker work build on the spool foundation.
+- Create: none
+- Touch:
+  - `internal/spool/payload_store.go`
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/schema.go`
+  - `internal/spool/*_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
+- Symbols:
+  - `PayloadCorruptionError`
+  - `AsPayloadCorruptionError`
+  - `PayloadStore.Load`
+  - `SQLiteStore.ClaimReady`
+  - `SQLiteStore.Recover`
+  - SQLite `records` schema / migration path
+- Acceptance:
+  - transient payload I/O failures are not treated as permanent corruption
+  - only `PayloadCorruptionError` triggers automatic dead-letter of a broken payload row
+  - `ClaimReady` requeues a transiently unreadable claimed row back to `queued` and returns an error
+  - `Recover` stops on transient payload I/O errors without dead-lettering the affected row
+  - attachment paths in `message.json` are exact store-controlled values of the form `attachments/<index>.bin`
+  - invalid attachment metadata such as negative size or malformed SHA256 is treated as corruption
+  - SQLite schema is versioned and migrated in place from the original unconstrained layout
+  - DB-level constraints reject invalid state, negative attempts, and zero / nonsensical timestamps
+- Implementation Notes:
+  - Keep storage-only scope. Do not change SMTP, relay, or provider wiring.
+  - Use `PRAGMA user_version` for schema versioning.
+  - This spool is still greenfield. Unsupported local development databases may be rejected and deleted manually instead of being migrated.
+  - Keep scan-time validation as defense in depth even after DB constraints are added.
+
+### SPOOL-001C — Enforce Canonical Record IDs In The Current V1 Schema
+- Status: done
+- Priority: P0
+- Depends On:
+  - SPOOL-001B
+- Goal: make the corrected schema the only valid `v1` schema without introducing a version bump or migration path.
+- Create: none
+- Touch:
+  - `internal/spool/schema.go`
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/sqlite_store_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove:
+  - rename/copy migration behavior for the spool `records` table
+- Symbols:
+  - `spoolSchemaVersion`
+  - `SQLiteStore.init`
+  - `SQLiteStore.bootstrapSchema`
+  - `SQLiteStore.validateCurrentSchema`
+  - `scanMetadata`
+  - `queryAllIDs`
+- Acceptance:
+  - `spoolSchemaVersion` remains `1`
+  - `records.id` is canonical in the current `v1` schema:
+    - `NOT NULL`
+    - non-empty
+    - no surrounding whitespace
+  - startup with `user_version = 0` and no `records` table bootstraps the current schema and sets version `1`
+  - startup with `user_version = 1` succeeds only when the actual table and index definitions match the corrected current schema
+  - stale local weak-schema databases fail fast with a clear delete-the-spool-dir error instead of being migrated
+  - `scanMetadata` and `queryAllIDs` reject invalid IDs instead of trimming them
+- Implementation Notes:
+  - Keep schema versioning infrastructure in place for future work, but do not bump the version for this greenfield correction.
+  - Validate schema shape using the stored table SQL, required columns, and required index names closely enough to distinguish the old weak schema from the corrected one.
+
+### SPOOL-001D — Harden Payload Loads Against Symlinks
+- Status: done
+- Priority: P0
+- Depends On:
+  - SPOOL-001B
+- Goal: prevent payload loads from following symlinks or accepting wrong file types inside payload directories.
+- Create: none
+- Touch:
+  - `internal/spool/payload_store.go`
+  - `internal/spool/payload_store_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
+- Symbols:
+  - `PayloadStore.Load`
+  - `PayloadCorruptionError`
+- Acceptance:
+  - payload loads do not follow symlinks for:
+    - payload directories
+    - `message.json`
+    - `attachments/`
+    - attachment files
+  - any symlink or wrong file type in those paths is treated as `PayloadCorruptionError`
+  - the exact manifest path rule remains:
+    - `attachments/<index>.bin`
+  - normal payload round-trips still pass
+- Implementation Notes:
+  - Use Linux descriptor-based nofollow reads with `golang.org/x/sys/unix`.
+  - Keep save-time behavior unchanged. This task hardens load-time trust boundaries only.
+
+### SPOOL-001E — Validate Current V1 Index Definitions
+- Status: done
+- Priority: P0
+- Depends On:
+  - SPOOL-001C
+- Goal: make the corrected current `v1` schema validation complete by checking index definitions, not just index names.
+- Create: none
+- Touch:
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/sqlite_store_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
+- Symbols:
+  - `SQLiteStore.validateCurrentSchema`
+  - SQLite `idx_records_ready`
+  - SQLite `idx_records_operation_id`
+- Acceptance:
+  - startup with `user_version = 1` succeeds only when:
+    - the `records` table matches the corrected current schema
+    - `idx_records_ready` is a non-unique index on `(state, next_attempt_at_ms, created_at_ms, id)`
+    - `idx_records_operation_id` is a non-unique index on `(operation_id)`
+  - a local DB with matching index names but wrong definitions fails startup with the existing delete-the-spool-dir style error
+  - no migration logic or version bump is introduced
+- Implementation Notes:
+  - Keep `spoolSchemaVersion = 1`.
+  - Old or weak local dev DBs remain unsupported and may be deleted manually.
+
+### SPOOL-001F — Anchor Payload And Orphan Traversal To Directory FDs
+- Status: done
+- Priority: P0
+- Depends On:
+  - SPOOL-001D
+- Goal: stop trusting path traversal through `payloads/` and `payload-orphans/` for load and orphan-reconciliation paths.
+- Create: none
+- Touch:
+  - `internal/spool/payload_store.go`
+  - `internal/spool/payload_store_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove:
+  - path-based orphan moves via `os.Rename`
+- Symbols:
+  - `PayloadStore.Load`
+  - `PayloadStore.QuarantineOrphans`
+- Acceptance:
+  - `Load` opens:
+    - spool root
+    - `payloads/`
+    - record directory
+    - `message.json`
+    - `attachments/`
+    - attachment files
+    with descriptor-based nofollow operations
+  - a symlinked `payloads/` path encountered during payload load is treated as `PayloadCorruptionError`
+  - orphan reconciliation does not use `os.ReadDir(payloadsRoot)` plus path-based renames
+  - a symlinked `payloads/` or `payload-orphans/` path encountered during orphan reconciliation returns a generic store error
+  - orphan moves use `renameat` as the primary move path
+  - if the runtime filesystem still returns `EXDEV` for same-root cross-directory moves, orphan reconciliation falls back to a bounded copy/remove move after the nofollow root checks succeed
+- Implementation Notes:
+  - Keep save-time behavior unchanged for now.
+  - This closes the remaining parent-path symlink gap without broadening scope into payload writes.
+  - The `EXDEV` fallback is retained only because the current container filesystem returns cross-device errors for cross-directory renames even inside one spool root.
+
+### SPOOL-002 — Durable Enqueue Integration Refactor Group
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-001E
+  - SPOOL-001F
   - SENDER-002
-- Goal: make SMTP success mean "accepted into durable queue", not "provider send completed".
+- Goal: move from synchronous provider send to durable enqueue with a clean separation between payload storage, record state management, and relay integration.
+- Create: none
+- Touch:
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
+- Symbols:
+  - `spool.Store`
+  - `PayloadStore`
+  - `SQLiteStore`
+  - `internal/relay`
+- Acceptance:
+  - storage-management work completes before relay-path enqueue integration begins
+  - rewrites of current spool internals are explicitly allowed when they reduce coupling or risk
+  - the public `spool.Store` contract remains stable if practical, even if internal spool types are reorganized
+  - provider submission remains off the SMTP request path once the full `SPOOL-002` group is complete
+- Implementation Notes:
+  - This is an umbrella task group. Implementation work is split across `SPOOL-002A` through `SPOOL-002F`.
+  - Do not keep patching the current spool code opportunistically. If the current design is too coupled, rewrite the relevant internal layer instead of carrying debt forward.
+  - Do not start provider async work or worker integration until the storage-management subgroup below is complete and the relay enqueue service exists.
+  - For merge-safe implementation, use this order:
+    - `SPOOL-002A`
+    - `SPOOL-002B`
+    - `SPOOL-002C`
+    - `SPOOL-002D`
+    - `SPOOL-003`
+    - `SPOOL-004A`
+    - `SPOOL-004B`
+    - `SPOOL-005A`
+    - `SPOOL-005B`
+    - `SPOOL-002E`
+    - `SPOOL-003A`
+    - `SPOOL-002F`
+    - `SPOOL-006`
+    - `QA-001`
+    - `DOC-001`
+  - `SPOOL-002E` is intentionally delayed until async delivery and worker startup exist so the tree never lands in an enqueue-without-delivery state.
+- Later In:
+  - provider async submission and poll contract in `SPOOL-003`
+  - provider-specific ACS and SES submit/poll behavior in `SPOOL-004A` and `SPOOL-004B`
+  - background delivery worker and recovery loop in `SPOOL-005`
+  - env and Helm configuration surface in `SPOOL-006`
+
+#### Storage Management
+
+### SPOOL-002A — Rewrite Payload Storage Boundaries
+- Status: done
+- Priority: P0
+- Depends On:
+  - SPOOL-001E
+  - SPOOL-001F
+- Goal: make `PayloadStore` consistently own filesystem safety, root traversal, and payload hygiene.
+- Create: none
+- Touch:
+  - `internal/spool/payload_store.go`
+  - `internal/spool/common.go`
+  - `internal/spool/*_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
+- Symbols:
+  - `PayloadStore`
+  - `PayloadStore.Save`
+  - `PayloadStore.Load`
+  - `PayloadStore.QuarantineOrphans`
+- Acceptance:
+  - missing or unreadable shared payload roots are treated as store errors, not per-record corruption
+  - record IDs are safe for filesystem use before they are used as path components
+  - write-path and orphan-path behavior follow the same trust model as the read path
+  - unexpected entries under `payloads/` are surfaced as store errors instead of being silently skipped
+  - the current container-specific `EXDEV` workaround remains explicit, bounded, and covered by tests
+  - staging artifacts are isolated from live payload data:
+    - staged writes use a dedicated `staging/` directory under the spool root, outside `payloads/` and `payload-orphans/`
+    - canceled or failed writes do not leave partially published entries under `payloads/`
+    - leftover staging artifacts are cleaned up or explicitly reconciled without being mistaken for live payload data
+  - crash-safe payload commit semantics are preserved during any rewrite:
+    - staged or temp writes before publish
+    - file `fsync`
+    - directory `fsync`
+    - publish via rename or equivalent atomic swap within the spool root
+  - tests explicitly cover:
+    - shared payload-root failure as a store error
+    - unsafe record IDs rejected before filesystem use
+    - unexpected `payloads/` entries surfacing as store errors
+    - aligned trust boundaries across save, load, and quarantine paths
+- Implementation Notes:
+  - This task may rewrite large portions of `PayloadStore` if that is cleaner than incremental patching.
+  - Move save, load, and orphan reconciliation toward one root-FD-based model instead of mixing path-based and descriptor-based traversal.
+  - Do not stage writes inside `payloads/`; keep staging in the dedicated top-level `staging/` directory so payload-root hygiene rules stay coherent.
+  - Keep the public spool contract stable; this task is about payload storage internals.
+- Later In:
+  - spool error taxonomy and state-layer ownership in `SPOOL-002B`
+  - top-level store composition and bootstrap in `SPOOL-002C`
+  - relay enqueue integration in `SPOOL-002D` through `SPOOL-002F`
+  - provider async and worker behavior in `SPOOL-003` through `SPOOL-005`
+  - config and deployment surface in `SPOOL-006`
+
+### SPOOL-002B — Split SQLite Record State From Payload Handling
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-002A
+- Goal: stop mixing metadata-state logic and payload I/O in one store implementation.
+- Create:
+  - any new internal record-state storage files needed to isolate SQLite metadata logic
+  - `internal/spool/errors.go`
+- Touch:
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/schema.go`
+  - `internal/spool/store.go`
+  - `internal/spool/*_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
+- Symbols:
+  - `SQLiteStore`
+  - `ClaimReady`
+  - `Recover`
+  - spool error taxonomy
+  - any extracted `RecordStore` / `MetadataStore` abstraction
+- Acceptance:
+  - state transitions remain unchanged semantically
+  - schema/bootstrap/claim/recovery metadata logic stays in a SQLite-focused component
+  - payload loading is no longer embedded in the SQLite-focused component
+  - payload corruption vs store-failure classification is not owned by the SQLite metadata layer
+  - the spool layer exposes explicit error categories that can be tested without SMTP-specific logic:
+    - record corruption remains record-scoped
+    - shared DB, payload-root, or state-store failures are store-scoped
+  - SMTP-side idempotency policy for duplicate submissions around the enqueue boundary is made explicit:
+    - for the durable-enqueue phase, duplicate SMTP submissions after enqueue are tolerated rather than deduplicated
+    - the relay guarantees no false success for a single SMTP transaction, but does not attempt cross-transaction dedupe in `SPOOL-002`
+  - later relay code does not need to reconstruct spool failure policy from raw error strings
+- Implementation Notes:
+  - Prefer extracting a state-focused internal component rather than letting `SQLiteStore` continue to own every concern.
+  - Keep SQLite as the source of truth for state and scheduling metadata.
+  - This task owns the spool error contract. SMTP mapping remains outside the spool package.
+- Later In:
+  - top-level store composition, ID generation, and bootstrap in `SPOOL-002C`
+  - relay enqueue integration and SMTP mapping in `SPOOL-002D` through `SPOOL-002F`
+  - provider async and worker behavior in `SPOOL-003` through `SPOOL-005`
+  - config and deployment surface in `SPOOL-006`
+
+### SPOOL-002C — Introduce A Hybrid Spool Coordinator
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-002B
+- Goal: compose record-state management and payload management behind the public spool contract.
+- Create:
+  - a top-level coordinator such as `internal/spool/hybrid_store.go`
+  - any store-construction helper needed to build the composed spool store from an explicit root path
+- Touch:
+  - `internal/spool/store.go`
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/payload_store.go`
+  - `internal/spool/*_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove:
+  - `SQLiteStore` as the top-level `spool.Store` implementation if a coordinator replaces it
+- Symbols:
+  - `Store`
+  - `SpoolStore` / `HybridStore`
+  - ID generation
+  - enqueue sequencing
+  - recovery reconciliation
+- Acceptance:
+  - `Store` remains the relay-facing spool contract
+  - the top-level spool implementation is composition-based, not one type owning every concern
+  - corruption policy is centralized in the coordinator layer
+  - the coordinator owns:
+    - ID generation
+    - enqueue sequencing
+    - claim plus payload materialization
+    - recovery reconciliation
+    - store-error vs record-corruption policy
+  - the spool package exposes an explicit constructor/bootstrap path that works before `SPOOL-006`
+  - local process-level spool construction does not depend on env parsing or Helm wiring
+  - before `SPOOL-006`, the explicit spool root used by process wiring is `/var/lib/smtp-cloud-relay/spool`
+  - startup fails hard if the spool store cannot be created or opened at that root
+- Implementation Notes:
+  - If the current hybrid store shape is too messy, rewrite it now.
+  - This task is the boundary between storage-internal cleanup and relay-path integration.
+  - Until `SPOOL-006` externalizes configuration, the process should construct the store with an explicit root path argument. That explicit path should match the future default spool directory rather than inventing a second location later.
+- Later In:
+  - relay enqueue service and SMTP-path consumption of the composed store in `SPOOL-002D` through `SPOOL-002F`
+  - provider async contract in `SPOOL-003`
+  - background delivery runtime and provider construction in `SPOOL-005`
+  - env and Helm configuration in `SPOOL-006`
+
+#### Record Management
+
+### SPOOL-002D — Add A Relay Enqueue Service
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-002C
+  - SENDER-002
+- Goal: move SMTP-path acceptance logic into a dedicated enqueue service that creates durable spool records instead of sending mail directly.
 - Create:
   - `internal/relay/handler.go`
   - `internal/relay/handler_test.go`
 - Touch:
   - `cmd/relay/main.go`
-- Remove:
-  - the direct provider call from the SMTP path in `cmd/relay/main.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
 - Symbols:
   - `relay.Handler`
   - `relay.Handler.HandleMessage`
 - Acceptance:
-  - SMTP `250` is returned only after the spool write commits
   - sender-policy permanent failures reject before enqueue
-  - spool-write failures return a temporary SMTP failure
-  - provider submission no longer happens on the SMTP request path
+  - the enqueue service returns durable-spool success or storage failure, never provider-send outcomes
+  - no provider submission happens in this service
+  - inflight gating remains at the enqueue boundary
+  - the enqueue service consumes a constructed spool store and does not construct providers
+  - the enqueue service does not know about async `Submit` / `Poll` behavior
 - Implementation Notes:
-  - Move message-acceptance logic out of `buildMessageHandler` and into a dedicated relay package.
-  - The relay handler should:
-    - apply sender policy
-    - generate a spool record
-    - enqueue it
-    - return success
-  - Keep `SMTP_MAX_INFLIGHT_SENDS` as a guard on concurrent enqueue work unless a later task intentionally renames it.
-  - Do not start the worker from inside the handler; wiring belongs in `cmd/relay/main.go`.
+  - This is the first relay-facing task in the spool stream. Do not couple it back to provider send logic.
+  - Keep the service focused on durable acceptance, not background delivery.
+- Later In:
+  - SMTP ack contract switch in `SPOOL-002E`
+  - enqueue-path contract tests in `SPOOL-002F`
+  - provider async delivery in `SPOOL-003` through `SPOOL-005`
+  - env and Helm configuration in `SPOOL-006`
 
-### SPOOL-003 — Replace Provider.Send With Submit + Poll
+### SPOOL-002E — Switch SMTP Success To Durable Enqueue
 - Status: planned
 - Priority: P0
-- Depends On: SPOOL-001
-- Goal: support both long-running and immediate-completion providers instead of synchronous send semantics.
+- Depends On:
+  - SPOOL-002D
+  - SPOOL-005B
+- Goal: make SMTP success mean "durably enqueued", not "provider send completed".
+- Create: none
+- Touch:
+  - `cmd/relay/main.go`
+  - `internal/relay/handler.go`
+  - `internal/smtp/*_test.go`
+- Remove:
+  - the direct provider call from the SMTP path in `cmd/relay/main.go`
+- Symbols:
+  - `buildMessageHandler`
+  - `relay.Handler`
+- Acceptance:
+  - SMTP `250` is returned only after:
+    - payload files are committed to disk
+    - record-state commit succeeds
+  - enqueue or storage failures return temporary SMTP failures
+  - direct provider send is no longer on the SMTP request path
+  - `buildMessageHandler` no longer depends on `providers.Build`
+  - SMTP-path inflight and timeout behavior is enqueue-specific rather than provider-send-specific
+  - `SMTP_MAX_INFLIGHT_SENDS` remains the inflight limit for the enqueue path in this phase
+  - provider runtime creation moves out of SMTP startup and is left for later background-delivery wiring
+  - until later config work lands, enqueue timeout ownership is explicit:
+    - use the SMTP request context as the primary cancellation boundary
+    - do not introduce an additional independent enqueue timeout in this task
+  - until later config work lands, `buildMessageHandler` returns `handlerTimeout == 0` for the enqueue path and relies on the SMTP request context rather than a second handler-owned timeout
+- Implementation Notes:
+  - Preserve the current SMTP failure mapping rules where they still apply.
+  - Do not start the worker from inside the SMTP handler; that stays in process wiring.
+  - Until `SPOOL-006`, process wiring should use the explicit spool root bootstrap path from `SPOOL-002C` rather than env-driven config.
+  - Do not rename or replace `SMTP_MAX_INFLIGHT_SENDS` during `SPOOL-002`; that can only happen in a later explicit config task if the team decides the name is misleading.
+- Later In:
+  - enqueue-boundary contract tests in `SPOOL-002F`
+  - provider async contract and provider-specific delivery logic in `SPOOL-003` through `SPOOL-004B`
+  - background worker/runtime ownership in `SPOOL-005`
+  - env and Helm configuration in `SPOOL-006`
+
+### SPOOL-002F — Durable Enqueue Contract Tests
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-002E
+  - SPOOL-003A
+- Goal: lock the new enqueue contract down after SMTP cutover and temporary compatibility cleanup are complete.
+- Create:
+  - any relay/spool integration tests needed to prove durable enqueue semantics
+- Touch:
+  - `internal/relay/*_test.go`
+  - `internal/smtp/server_integration_test.go`
+  - `internal/spool/*_test.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove: none
+- Symbols:
+  - relay integration tests
+  - SMTP enqueue tests
+- Acceptance:
+  - SMTP ack happens only after durable enqueue
+  - sender-policy rejection happens before enqueue
+  - storage failure yields a temporary SMTP failure
+  - no provider call occurs on the SMTP request path
+  - enqueue-path behavior remains correct across restart-safe spool state
+  - inflight saturation at the enqueue boundary still returns `451 4.3.2`
+  - request context cancellation or timeout during partial enqueue never returns false success and never leaves the durable state ambiguous
+  - tests prove that provider runtime creation and provider send are not on the SMTP request path anymore
+  - tests explicitly prove the chosen `SPOOL-002` idempotency boundary:
+    - a single SMTP transaction never reports success before durable enqueue
+    - duplicate SMTP submissions across separate transactions are tolerated, not deduplicated, in this phase
+- Implementation Notes:
+  - This closes the synchronous-to-durable-enqueue transition after the async provider contract, worker path, SMTP cutover, and temporary compatibility cleanup are all in place.
+  - Keep these tests focused on the relay/store boundary rather than provider async behavior.
+- Later In:
+  - provider async contract and provider-specific submission semantics in `SPOOL-003` through `SPOOL-004B`
+  - worker scheduling, retries, and recovery loop in `SPOOL-005`
+  - env and Helm configuration in `SPOOL-006`
+
+### SPOOL-003 — Introduce Submit + Poll Alongside Temporary Send Compatibility
+- Status: planned
+- Priority: P0
+- Depends On: SPOOL-002D
+- Goal: introduce an async provider contract that supports both long-running and immediate-completion providers without breaking the still-live direct-send SMTP path during the transition.
 - Create:
   - `internal/email/submission.go`
 - Touch:
   - `internal/email/provider.go`
+  - `internal/providers/acs/provider.go`
+  - `internal/providers/acs/provider_test.go`
   - `internal/providers/noop/provider.go`
   - `internal/providers/ses/provider.go`
+  - `internal/providers/ses/provider_test.go`
   - `internal/providers/factory.go`
-- Remove:
-  - `Provider.Send`
+- Remove: none
 - Symbols:
   - `Provider.Submit(ctx, msg, operationID string) (SubmissionResult, error)`
   - `Provider.Poll(ctx, operationID string) (SubmissionStatus, error)`
   - `SubmissionResult`
   - `SubmissionStatus`
 - Acceptance:
-  - the provider contract compiles without synchronous send semantics
+  - the provider contract exposes `Submit` and `Poll` for `acs`, `ses`, and `noop` while the tree remains buildable before SMTP cutover
   - `SubmissionResult` includes provider-independent completion state so the worker can handle both ACS-style long-running operations and SES-style immediate completion
   - `noop` simulates accepted submission with immediate success
   - the contract supports:
     - long-running submit + poll providers
     - immediate-completion providers that do not normally need poll
   - provider runtime wiring in `internal/providers/factory.go` still works for `acs`, `ses`, and `noop`
+  - temporary synchronous compatibility is preserved until `SPOOL-003A`:
+    - `Provider.Send` may remain as a transitional adapter
+    - the still-live direct-send SMTP path continues to compile and function until `SPOOL-002E`
 - Implementation Notes:
+  - This task must preserve a temporary compatibility path for the still-live direct-send SMTP handler until `SPOOL-002E` removes that path and `SPOOL-003A` removes the compatibility layer itself.
+  - That compatibility path may adapt `Submit`/`Poll` back into the current synchronous request-path behavior temporarily, but it must be clearly marked transitional.
   - `SubmissionResult` should include:
     - `OperationID`
     - `OperationLocation`
@@ -574,6 +1096,51 @@ Use this format when adding or revising tasks:
     - `canceled`
   - Keep the interface provider-agnostic so a future provider can implement it without ACS-specific types.
   - The worker must only call `Poll` when `Submit` returns a non-terminal state.
+- Later In:
+  - provider-specific request and response mapping in `SPOOL-004A` and `SPOOL-004B`
+  - worker scheduling, runtime construction, retries, and recovery consumption of this contract in `SPOOL-005`
+  - removal of temporary `Provider.Send` compatibility in `SPOOL-003A`
+  - SMTP enqueue, bootstrap, and request-path cutover are owned by `SPOOL-002C` through `SPOOL-002F`; temporary compatibility cleanup is owned by `SPOOL-003A`
+
+### SPOOL-003A — Remove Temporary Provider.Send Compatibility
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-002E
+  - SPOOL-004A
+  - SPOOL-004B
+- Goal: remove the transitional synchronous provider compatibility layer after SMTP cutover no longer needs it.
+- Create: none
+- Touch:
+  - `internal/email/provider.go`
+  - `internal/providers/acs/provider.go`
+  - `internal/providers/acs/provider_test.go`
+  - `internal/providers/noop/provider.go`
+  - `internal/providers/ses/provider.go`
+  - `internal/providers/ses/provider_test.go`
+  - `internal/providers/factory.go`
+  - `cmd/relay/main.go`
+  - `internal/relay/handler.go`
+  - `FEATURE.md`
+  - `CONTINUE.md`
+- Remove:
+  - `Provider.Send`
+  - any temporary adapter layer that keeps direct-send SMTP compatibility alive after `SPOOL-003`
+- Symbols:
+  - `Provider.Send`
+  - provider compatibility adapters
+- Acceptance:
+  - the provider interface exposes only `Submit` and `Poll`
+  - no production code path still depends on `Provider.Send`
+  - the tree stays green after the compatibility layer is removed
+  - this task does not reintroduce provider submission onto the SMTP request path
+- Implementation Notes:
+  - This is cleanup of the transitional compatibility introduced in `SPOOL-003`.
+  - Execute it only after `SPOOL-002E` has removed the direct-send SMTP path.
+- Later In:
+  - enqueue-boundary proof in `SPOOL-002F`
+  - worker and provider runtime behavior in `SPOOL-005`
+  - env and Helm configuration in `SPOOL-006`
 
 ### SPOOL-004A — Implement ACS Submit + Poll Using Customer Operation IDs
 - Status: planned
@@ -608,6 +1175,10 @@ Use this format when adding or revising tasks:
   - Keep existing HMAC auth logic and extend it to the poll request.
   - Parse `retry-after` from both submit and poll responses when present.
   - Be explicit in code comments that ACS operation success is submission success, not final recipient delivery.
+- Later In:
+  - worker retry, poll scheduling, and recovery behavior in `SPOOL-005`
+  - env and Helm configuration in `SPOOL-006`
+  - recipient delivery-event correlation in future work, not this task
 
 ### SPOOL-004B — Implement SES Submit With Immediate Completion Semantics
 - Status: planned
@@ -637,12 +1208,16 @@ Use this format when adding or revising tasks:
   - SES does not need an ACS-style long-running operation workflow for the first implementation.
   - The worker should mark SES records succeeded immediately when `Submit` returns terminal success.
   - Keep the interface shape the same as ACS, but do not force SES into a fake submitted-state lifecycle.
+- Later In:
+  - worker retry, runtime construction, and recovery behavior in `SPOOL-005`
+  - env and Helm configuration in `SPOOL-006`
+  - any later provider conformance work in future tasks, not this task
 
 ### SPOOL-005 — Add Worker Loop, Retry Scheduling, Recovery, And Dead-Letter
 - Status: planned
 - Priority: P0
 - Depends On:
-  - SPOOL-002
+  - SPOOL-003
   - SPOOL-004A
   - SPOOL-004B
 - Goal: complete the async delivery pipeline.
@@ -652,39 +1227,106 @@ Use this format when adding or revising tasks:
 - Touch:
   - `cmd/relay/main.go`
   - `internal/relay/handler.go`
+  - `internal/spool/types.go`
+  - `internal/spool/store.go`
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/schema.go`
 - Remove: none
 - Symbols:
   - `Worker`
   - `Worker.Start`
   - `Worker.Recover`
 - Acceptance:
-  - the worker claims ready records
-  - the worker submits queued records
-  - the worker polls submitted records only for providers that return non-terminal submit results
-  - retries use `DELIVERY_RETRY_ATTEMPTS` and `DELIVERY_RETRY_BASE_DELAY_MS`
-  - exhausted or permanent failures move to `dead-letter`
-  - restart recovery resumes queued and submitted work without losing records
+  - `SPOOL-005A` and `SPOOL-005B` complete in order
+  - background delivery runtime, recovery, steady-state submit/poll behavior, and timeout semantics are all implemented before SMTP cutover
+  - the relay does not accept SMTP traffic in a degraded mode where durable enqueue is available but background delivery is not running
 - Implementation Notes:
-  - The worker loop should have two phases:
-    - recovery at startup
-    - steady-state polling/claiming loop
-  - Recovery rules:
-    - move stale `working` records back to `queued`
-    - keep `submitted` records as `submitted`
-    - resume polling for `submitted` records after startup
-  - Retry scheduling:
-    - store the next eligible attempt time on the record
-    - exponential backoff based on `DELIVERY_RETRY_BASE_DELAY_MS`
-    - stop retrying once `Attempt >= DELIVERY_RETRY_ATTEMPTS`
-  - Permanent provider failures go directly to `dead-letter`.
-  - Temporary submission failures and non-terminal operation states remain retryable.
-  - Immediate-completion providers skip the `submitted` state and move directly to `succeeded` on successful submit.
-  - Keep the worker single-process and single-node for the first implementation.
+  - `SPOOL-005` is a milestone umbrella. Do not implement it as one patch.
+  - Execute it through these checkpoints:
+    - `SPOOL-005A`: background delivery bootstrap and recovery startup
+    - `SPOOL-005B`: steady-state submit, poll, retry, and timeout loop
+  - Keep the detailed lifecycle, retry, recovery, and timeout rules on the checkpoint tasks below.
+- Later In:
+  - env, Helm, PVC, and deployment validation in `SPOOL-006`
+  - readiness and metrics wiring in `OBS-001` and `OBS-002`
+  - end-to-end contract coverage in `QA-001`
+  - retention, pruning, and long-term spool cleanup policy in `FUTURE-003`
+
+#### SPOOL-005 Internal Checkpoints
+
+### SPOOL-005A — Background Delivery Bootstrap And Recovery
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-003
+  - SPOOL-004A
+  - SPOOL-004B
+- Goal: make process startup and recovery safe before SMTP cutover.
+- Create: none
+- Touch:
+  - `cmd/relay/main.go`
+  - `internal/spool/worker.go`
+  - `internal/spool/worker_test.go`
+  - `internal/spool/store.go`
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/schema.go`
+- Remove: none
+- Symbols:
+  - `Worker.Start`
+  - `Worker.Recover`
+- Acceptance:
+  - background provider runtime construction is wired in process startup
+  - worker startup is fail-fast
+  - recovery runs at process start before delivery begins
+  - restart recovery requeues stale `working` rows and resumes `submitted` rows
+  - process shutdown stops the worker on context cancellation and waits for worker goroutines to exit
+  - the relay still does not cut SMTP over to durable enqueue in this checkpoint
+- Implementation Notes:
+  - This checkpoint is about process lifecycle and recovery only.
+  - Do not switch the SMTP request path in this checkpoint.
+  - Do not implement the full steady-state retry loop here.
+- Later In:
+  - steady-state submit, poll, retry, and timeout behavior in `SPOOL-005B`
+  - SMTP-path cutover in `SPOOL-002E`
+  - end-to-end async pipeline coverage in `QA-001`
+
+### SPOOL-005B — Steady-State Submit, Poll, Retry, And Timeout Loop
+- Status: planned
+- Priority: P0
+- Depends On:
+  - SPOOL-005A
+- Goal: complete the steady-state async delivery loop before SMTP cutover.
+- Create: none
+- Touch:
+  - `internal/spool/worker.go`
+  - `internal/spool/worker_test.go`
+  - `internal/spool/types.go`
+  - `internal/spool/store.go`
+  - `internal/spool/sqlite_store.go`
+  - `internal/spool/schema.go`
+- Remove: none
+- Symbols:
+  - `Worker`
+  - steady-state loop
+- Acceptance:
+  - the worker claims ready records and submits queued records
+  - the worker polls submitted records only for non-terminal provider results
+  - retry scheduling, `RetryAfter`, `ProviderMessageID`, first-submission timestamp, and `24h` timeout behavior are implemented
+  - exhausted or permanent failures move to `dead-letter`
+  - immediate-completion providers skip the `submitted` state and move directly to `succeeded`
+  - the system is ready for SMTP cutover once this checkpoint passes
+- Implementation Notes:
+  - This checkpoint finishes the background delivery behavior that `SPOOL-002E` depends on.
+  - Keep acceptance and implementation consistent with the top-level `SPOOL-005` rules above.
+- Later In:
+  - SMTP-path cutover and enqueue-boundary proof in `SPOOL-002E` and `SPOOL-002F`
+  - env and Helm configuration in `SPOOL-006`
+  - full end-to-end coverage in `QA-001`
 
 ### SPOOL-006 — Add Spool Config And Helm Persistence
 - Status: planned
 - Priority: P1
-- Depends On: SPOOL-005
+- Depends On: SPOOL-005B
 - Goal: make the spool usable in Kubernetes with durable storage.
 - Create:
   - `deploy/helm/smtp-cloud-relay/templates/pvc.yaml`
@@ -701,23 +1343,36 @@ Use this format when adding or revising tasks:
   - `Config.SpoolPollIntervalMS`
 - Acceptance:
   - add `SPOOL_DIR` with default `/var/lib/smtp-cloud-relay/spool`
-  - add `SPOOL_POLL_INTERVAL_MS`
+  - add `SPOOL_POLL_INTERVAL_MS` with default `1000`
+  - the spool directory contains:
+    - `spool.db`
+    - `staging/`
+    - `payloads/`
+    - `payload-orphans/`
   - Helm creates a PVC by default in provider modes that require durable relay semantics (`acs` and `ses`)
   - Helm validation fails if:
     - `replicaCount > 1` in `acs` or `ses` mode
     - spool persistence is disabled in `acs` or `ses` mode
+  - this task owns config and deployment surface only; it does not introduce first-time process-level spool construction
 - Implementation Notes:
   - The first spool implementation is explicitly single-replica.
+  - Assume the coordinator-based spool architecture from `SPOOL-002C` when wiring config and PVC-backed storage.
+  - Document that SQLite requires block-backed single-writer storage such as `ReadWriteOnce`; do not treat shared RWX/NFS storage as equivalent.
   - Add a writable volume mount for the spool directory.
   - The Helm chart should surface PVC size, storage class, and existing-claim options.
   - Validation should be implemented in template helpers so bad values fail fast at render time.
+- Later In:
+  - readiness and metrics wiring in `OBS-001` and `OBS-002`
+  - relay integration and restart behavior coverage in `QA-001`
+  - README and deployment documentation updates in `DOC-001`
+  - retention and cleanup configuration surface in `FUTURE-003`
 
 ## Observability
 
 ### OBS-001 — Replace Placeholder Metrics With Real Prometheus Metrics
 - Status: planned
 - Priority: P1
-- Depends On: SPOOL-005
+- Depends On: SPOOL-005B
 - Goal: make `/metrics` operational.
 - Create:
   - `internal/observability/metrics.go`
@@ -760,7 +1415,7 @@ Use this format when adding or revising tasks:
 - Status: planned
 - Priority: P1
 - Depends On:
-  - SPOOL-005
+  - SPOOL-005A
   - OBS-001
 - Goal: prevent the pod from reporting ready before the async system is usable.
 - Create: none
@@ -791,7 +1446,7 @@ Use this format when adding or revising tasks:
   - CORE-002
   - CORE-004
   - SENDER-003
-  - SPOOL-005
+  - SPOOL-005B
   - OBS-002
 - Goal: lock the new relay contract down with end-to-end tests.
 - Create:
@@ -804,8 +1459,10 @@ Use this format when adding or revising tasks:
   - test helpers only
 - Acceptance:
   - test matrix covers:
-    - enqueue-before-ack behavior
     - restart recovery after a queued-but-unsent message
+    - restart recovery after a submitted-but-non-terminal operation so polling resumes correctly
+    - missing payload recovery into dead-letter
+    - orphan payload directory quarantine
     - temporary ACS failure with retry
     - permanent ACS failure to dead-letter
     - temporary SES failure with retry
@@ -817,6 +1474,7 @@ Use this format when adding or revising tasks:
   - Prefer temp directories and fake providers over live network calls.
   - Use a fake provider that implements `Submit` and `Poll` so retry and dead-letter behavior can be driven deterministically.
   - Keep ACS provider tests focused on request/response mapping; keep relay behavior in relay/spool integration tests.
+  - Do not duplicate enqueue-boundary assertions already owned by `SPOOL-002F`; keep this task focused on full async pipeline and process-lifecycle coverage.
 
 ### DOC-001 — Update README And Deployment Guidance
 - Status: planned
@@ -841,6 +1499,8 @@ Use this format when adding or revising tasks:
     - sender-policy env vars
     - spool env vars
     - durable acceptance semantics
+    - the `SPOOL-002` duplicate policy: no false success for a single SMTP transaction, but no cross-transaction deduplication of repeated SMTP submissions
+    - the `SPOOL-002` enqueue-path concurrency contract: `SMTP_MAX_INFLIGHT_SENDS` remains the SMTP enqueue concurrency limit in that phase
     - metrics
     - Helm persistence requirements
   - `make test` docs match current repository behavior
@@ -852,6 +1512,7 @@ Use this format when adding or revising tasks:
 
 - `go test ./...` passes in a clean environment.
 - A message in `acs` or `ses` mode is acknowledged to the SMTP client only after durable local enqueue.
+- During the durable-enqueue phase, the relay guarantees no false success for a single SMTP transaction but does not attempt cross-transaction deduplication of repeated SMTP submissions.
 - A process restart after enqueue but before submission does not lose the message.
 - A provider temporary failure is retried with backoff.
 - A provider permanent failure is not retried forever and ends in dead-letter.
@@ -862,7 +1523,14 @@ Use this format when adding or revising tasks:
 ## Assumptions And Defaults
 
 - ACS and SES are both in-scope real outbound providers.
-- The first durable spool implementation is filesystem-based and single-replica only.
+- The first durable spool implementation uses SQLite for spool state and the filesystem for message payloads and attachment bytes.
+- The spool implementation is single-replica only for the first release.
+- In `SPOOL-002`, `SMTP_MAX_INFLIGHT_SENDS` continues to govern SMTP-path enqueue concurrency; no enqueue-specific replacement setting is introduced in that phase.
+- In `SPOOL-002`, the project interprets the idempotency requirement as:
+  - no false success for a single SMTP transaction
+  - durable relay-side spool record identity after enqueue
+  - no cross-transaction deduplication of repeated SMTP submissions in the durable-enqueue phase
+- Large bodies and attachment bytes are stored on disk; SQLite stores state, scheduling metadata, and payload references rather than bulk attachment blobs.
 - PVC-backed storage is the default deployment mode for provider-backed relay operation (`acs` and `ses`) in Helm.
 - ACS uses a long-running submit + poll flow; SES uses immediate submit completion for the first implementation.
 - ACS operation polling stops at the documented send-operation terminal state.
@@ -874,7 +1542,7 @@ Use this format when adding or revising tasks:
 - Status: blocked
 - Priority: P2
 - Depends On:
-  - SPOOL-005
+  - SPOOL-005B
   - QA-001
 - Goal: make it harder to add a new provider that silently breaks retry, dead-letter, sender policy, or readiness semantics.
 - Create:
@@ -893,7 +1561,7 @@ Use this format when adding or revising tasks:
 - Status: blocked
 - Priority: P2
 - Depends On:
-  - SPOOL-004
+  - SPOOL-004A
   - OBS-001
 - Goal: correlate ACS submission success with downstream delivery or bounce events.
 - Create:
@@ -909,6 +1577,32 @@ Use this format when adding or revising tasks:
 - Implementation Notes:
   - ACS submit/poll endpoints confirm long-running operation status, not final recipient delivery.
   - This is intentionally not part of the first spool implementation.
+
+### FUTURE-003 — Add Spool Retention And Cleanup Policy
+- Status: blocked
+- Priority: P2
+- Depends On:
+  - SPOOL-005B
+  - SPOOL-006
+- Goal: prevent unbounded spool growth once the durable enqueue pipeline is in production use.
+- Create:
+  - future cleanup or garbage-collection package if the team decides it should run in-process
+- Touch:
+  - spool config surface
+  - worker or cleanup runtime wiring
+  - Helm values and docs
+- Remove: none
+- Symbols:
+  - future spool retention policy
+- Acceptance:
+  - the relay has an explicit policy for:
+    - pruning old `succeeded` rows and payloads
+    - pruning old `dead-letter` rows and payloads
+    - aging out or otherwise managing `payload-orphans/`
+  - cleanup behavior is documented and configurable rather than implicit
+- Implementation Notes:
+  - This is intentionally deferred so the first spool implementation can focus on correctness of durable enqueue and recovery semantics.
+  - Do not add ad hoc cleanup behavior before this task owns it.
 
 ## Source Notes
 
