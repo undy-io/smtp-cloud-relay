@@ -13,6 +13,9 @@ import (
 )
 
 // sqliteRecordStore owns SQLite-backed spool record metadata only.
+//
+// It intentionally does not load payload files or classify payload corruption;
+// that orchestration stays in SpoolStore.
 type sqliteRecordStore struct {
 	root string
 	db   *sql.DB
@@ -172,6 +175,7 @@ func (s *sqliteRecordStore) claimReadyMetadata(ctx context.Context, now time.Tim
 	return meta, true, nil
 }
 
+// nextSubmittedReady returns the next due submitted record without touching payloads.
 func (s *sqliteRecordStore) nextSubmittedReady(ctx context.Context, now time.Time) (Record, bool, error) {
 	meta, ok, err := queryOneMetadata(ctx, s.db, `
 		SELECT

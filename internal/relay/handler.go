@@ -26,6 +26,7 @@ type BusyError struct {
 	Limit int
 }
 
+// Error formats the inflight-saturation rejection message.
 func (e *BusyError) Error() string {
 	if e == nil {
 		return "relay busy"

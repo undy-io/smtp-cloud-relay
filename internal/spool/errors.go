@@ -12,6 +12,7 @@ type StoreError struct {
 	Err error
 }
 
+// Error formats the store-scoped failure message.
 func (e *StoreError) Error() string {
 	if e == nil {
 		return "spool store error"
@@ -22,6 +23,7 @@ func (e *StoreError) Error() string {
 	return fmt.Sprintf("spool store %s: %v", strings.TrimSpace(e.Op), e.Err)
 }
 
+// Unwrap returns the underlying store failure.
 func (e *StoreError) Unwrap() error { return e.Err }
 
 // AsStoreError unwraps err into a StoreError when the failure is store-scoped.
@@ -39,6 +41,7 @@ type RecordCorruptionError struct {
 	Err      error
 }
 
+// Error formats the record-scoped corruption message.
 func (e *RecordCorruptionError) Error() string {
 	if e == nil {
 		return "spool record corruption"
@@ -46,6 +49,7 @@ func (e *RecordCorruptionError) Error() string {
 	return fmt.Sprintf("spool record %q is corrupt: %v", e.RecordID, e.Err)
 }
 
+// Unwrap returns the underlying corruption cause.
 func (e *RecordCorruptionError) Unwrap() error { return e.Err }
 
 // AsRecordCorruptionError unwraps err into a RecordCorruptionError.

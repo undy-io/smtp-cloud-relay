@@ -38,6 +38,7 @@ type PayloadCorruptionError struct {
 	Err  error
 }
 
+// Error formats the payload corruption message.
 func (e *PayloadCorruptionError) Error() string {
 	if e == nil {
 		return "spool payload corruption"
@@ -48,8 +49,10 @@ func (e *PayloadCorruptionError) Error() string {
 	return fmt.Sprintf("spool payload %q is corrupt: %v", e.ID, e.Err)
 }
 
+// Unwrap returns the underlying payload corruption cause.
 func (e *PayloadCorruptionError) Unwrap() error { return e.Err }
 
+// AsPayloadCorruptionError unwraps err into a PayloadCorruptionError.
 func AsPayloadCorruptionError(err error) (*PayloadCorruptionError, bool) {
 	var target *PayloadCorruptionError
 	if !errors.As(err, &target) {
@@ -77,6 +80,7 @@ type payloadAttachmentRef struct {
 	SHA256      string `json:"sha256"`
 }
 
+// NewPayloadStore constructs the filesystem payload store rooted at root.
 func NewPayloadStore(root string) (*PayloadStore, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -127,6 +131,7 @@ func NewPayloadStore(root string) (*PayloadStore, error) {
 	return store, nil
 }
 
+// Save persists the normalized message payload and attachment bytes for id.
 func (s *PayloadStore) Save(id string, msg email.Message) error {
 	id = strings.TrimSpace(id)
 	if err := validateCanonicalRecordID(id); err != nil {
@@ -247,6 +252,7 @@ func (s *PayloadStore) Save(id string, msg email.Message) error {
 	return nil
 }
 
+// Load reconstructs a normalized message payload for id from disk.
 func (s *PayloadStore) Load(id string) (email.Message, error) {
 	id = strings.TrimSpace(id)
 	if err := validateCanonicalRecordID(id); err != nil {
@@ -332,6 +338,7 @@ func (s *PayloadStore) Load(id string) (email.Message, error) {
 	return msg, nil
 }
 
+// Remove deletes the persisted payload for id.
 func (s *PayloadStore) Remove(id string) error {
 	id = strings.TrimSpace(id)
 	if err := validateCanonicalRecordID(id); err != nil {
@@ -356,6 +363,7 @@ func (s *PayloadStore) Remove(id string) error {
 	return syncFD(payloadsFD, s.payloadsRoot)
 }
 
+// QuarantineOrphans moves payload directories without matching records aside.
 func (s *PayloadStore) QuarantineOrphans(validIDs map[string]struct{}) ([]string, error) {
 	rootFD, _, err := openDirectoryPathNoFollow(s.root)
 	if err != nil {

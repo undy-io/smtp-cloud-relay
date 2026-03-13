@@ -29,7 +29,7 @@ Use this file as the source of truth for active feature work until the relay mee
   - `SENDER-001` through `SENDER-003` are complete
   - `SPOOL-001` through `SPOOL-006` are complete
   - `OBS-001`, `OBS-002`, and `QA-001` are complete
-- The current planned phase is complete after `DOC-001`; remaining items are in `Deferred / Future`.
+- The current planned phase is complete after `DOC-003`; remaining items are in `Deferred / Future`.
 
 ## Non-Negotiables
 
@@ -89,7 +89,7 @@ Use this format when adding or revising tasks:
   - `SPOOL-002F`
   - `SPOOL-006`
 - Finish `OBS-001` and `OBS-002` after the spool exists.
-- Finish `QA-001` and `DOC-001` last.
+- Finish `QA-001`, `DOC-001`, `DOC-002`, and `DOC-003` last.
 
 ## Stabilize Current Tree
 
@@ -1224,7 +1224,7 @@ Use this format when adding or revising tasks:
   - any later provider conformance work in future tasks, not this task
 
 ### SPOOL-005 — Add Worker Loop, Retry Scheduling, Recovery, And Dead-Letter
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-003
@@ -1553,6 +1553,70 @@ Use this format when adding or revising tasks:
 - Implementation Notes:
   - Update the "What It Does", config, and Helm sections in README.
   - If `Makefile` behavior changes during implementation, document the new developer workflow instead of describing an outdated one.
+
+### DOC-002 — Public API And Package Documentation
+- Status: done
+- Priority: P2
+- Depends On:
+  - DOC-001
+- Goal: make the codebase readable from exported symbols and package entrypoints without opening tests or implementation files.
+- Create:
+  - `internal/email/doc.go`
+  - `internal/spool/doc.go`
+  - `internal/relay/doc.go`
+  - `internal/smtp/doc.go`
+  - `internal/observability/doc.go`
+  - `internal/providers/acs/doc.go`
+  - `internal/providers/ses/doc.go`
+  - `internal/providers/noop/doc.go`
+  - `internal/config/doc.go`
+  - `cmd/relay/doc.go`
+- Touch:
+  - `internal/email/sender_policy.go`
+  - `internal/email/trace_headers.go`
+  - `internal/observability/http.go`
+  - `internal/providers/acs/provider.go`
+  - `internal/providers/ses/provider.go`
+  - `internal/providers/noop/provider.go`
+  - `internal/smtp/server.go`
+  - `internal/config/config.go`
+  - other production `.go` files with undocumented exported symbols
+- Remove: none
+- Symbols:
+  - public package comments
+  - exported symbol doc comments
+- Acceptance:
+  - every exported symbol in production `.go` files has a meaningful doc comment or intentional grouped comment
+  - each core package has a package comment that explains its role in one short paragraph
+  - comments describe intent and contract, not line-by-line mechanics
+- Implementation Notes:
+  - Prefer package comments in `doc.go` files and symbol comments on declarations.
+  - Keep comments stable against refactors by documenting behavior and ownership rather than local implementation trivia.
+
+### DOC-003 — Internal Subsystem Documentation
+- Status: done
+- Priority: P2
+- Depends On:
+  - DOC-002
+- Goal: document the non-obvious internals that future maintainers would otherwise have to reverse-engineer.
+- Create: none
+- Touch:
+  - `internal/spool/spool_store.go`
+  - `internal/spool/sqlite_record_store.go`
+  - `internal/spool/worker.go`
+  - `internal/providers/acs/provider.go`
+  - `internal/smtp/server.go`
+  - `cmd/relay/main.go`
+- Remove: none
+- Symbols:
+  - subsystem overview comments
+  - non-obvious internal helper comments
+- Acceptance:
+  - every high-risk subsystem has a top-level orientation comment
+  - every non-obvious invariant or failure policy that matters operationally is explained once near the code that owns it
+  - comments do not duplicate implementation details already obvious from names and tests
+- Implementation Notes:
+  - Focus on spool state transitions, payload/state ownership split, worker loop ordering, bounded finalization, SMTP lifecycle semantics, ACS submit/poll responsibilities, and process startup ownership.
 
 ## Cross-Cutting Acceptance Criteria
 

@@ -36,6 +36,9 @@ type WorkerConfig struct {
 }
 
 // Worker owns the single-threaded background delivery loop around the durable spool.
+//
+// It always tries one due submitted record before one ready queued record so
+// long-running provider operations make progress without starving new mail.
 type Worker struct {
 	store    Store
 	provider email.Provider
@@ -132,6 +135,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 }
 
+// processQueuedOnce advances one queued record through provider submission.
 func (w *Worker) processQueuedOnce(ctx context.Context, now time.Time) (bool, error) {
 	rec, ok, err := w.store.ClaimReady(ctx, now)
 	if err != nil || !ok {
@@ -223,6 +227,7 @@ func (w *Worker) processQueuedOnce(ctx context.Context, now time.Time) (bool, er
 	}
 }
 
+// processSubmittedOnce advances one previously accepted provider operation.
 func (w *Worker) processSubmittedOnce(ctx context.Context, now time.Time) (bool, error) {
 	rec, ok, err := w.store.NextSubmittedReady(ctx, now)
 	if err != nil || !ok {
@@ -311,6 +316,8 @@ func (w *Worker) processSubmittedOnce(ctx context.Context, now time.Time) (bool,
 }
 
 func (w *Worker) finalizeRecord(action string, recordID string, fn func(context.Context) error) error {
+	// Once a provider outcome exists, prefer a bounded local persistence window
+	// over immediate cancellation so accepted mail is not silently lost.
 	finalizeCtx, cancel := context.WithTimeout(context.Background(), w.cfg.FinalizeTimeout)
 	defer cancel()
 

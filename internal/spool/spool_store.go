@@ -14,6 +14,9 @@ const spoolProviderName = "spool"
 const DefaultRoot = "/var/lib/smtp-cloud-relay/spool"
 
 // SpoolStore coordinates SQLite record metadata and filesystem payload storage.
+//
+// SQLite is the source of truth for queue state and scheduling; the payload
+// store owns message bodies and attachment bytes on disk.
 type SpoolStore struct {
 	records  *sqliteRecordStore
 	payloads *PayloadStore
@@ -63,6 +66,7 @@ func (s *SpoolStore) StateCounts(ctx context.Context) (map[string]int, error) {
 	return s.records.stateCounts(ctx)
 }
 
+// Enqueue durably persists msg and inserts a queued spool record.
 func (s *SpoolStore) Enqueue(ctx context.Context, msg email.Message) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
@@ -94,6 +98,7 @@ func (s *SpoolStore) Enqueue(ctx context.Context, msg email.Message) (Record, er
 	return rec, nil
 }
 
+// ClaimReady loads the next due queued record and classifies payload failures.
 func (s *SpoolStore) ClaimReady(ctx context.Context, now time.Time) (Record, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
@@ -127,26 +132,32 @@ func (s *SpoolStore) ClaimReady(ctx context.Context, now time.Time) (Record, boo
 	}
 }
 
+// NextSubmittedReady returns the next due submitted record without loading payloads.
 func (s *SpoolStore) NextSubmittedReady(ctx context.Context, now time.Time) (Record, bool, error) {
 	return s.records.nextSubmittedReady(ctx, now.UTC())
 }
 
+// MarkSubmitted persists accepted long-running provider metadata for rec.
 func (s *SpoolStore) MarkSubmitted(ctx context.Context, rec Record, result email.SubmissionResult, nextAttemptAt time.Time) (Record, error) {
 	return s.records.markSubmitted(ctx, rec, result, nextAttemptAt)
 }
 
+// MarkRetry reschedules rec after a retryable failure or non-terminal poll result.
 func (s *SpoolStore) MarkRetry(ctx context.Context, rec Record, nextAttemptAt time.Time, lastErr *LastError) (Record, error) {
 	return s.records.markRetry(ctx, rec, nextAttemptAt, lastErr)
 }
 
+// MarkSucceeded persists terminal provider success for rec.
 func (s *SpoolStore) MarkSucceeded(ctx context.Context, rec Record) (Record, error) {
 	return s.records.markSucceeded(ctx, rec)
 }
 
+// MarkDeadLetter persists terminal failure metadata for rec.
 func (s *SpoolStore) MarkDeadLetter(ctx context.Context, rec Record, lastErr *LastError) (Record, error) {
 	return s.records.markDeadLetter(ctx, rec, lastErr)
 }
 
+// Recover requeues working records, validates payloads, and quarantines orphans.
 func (s *SpoolStore) Recover(ctx context.Context, now time.Time) (RecoveryResult, error) {
 	if err := ctx.Err(); err != nil {
 		return RecoveryResult{}, err

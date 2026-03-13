@@ -14,6 +14,7 @@ import (
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
 )
 
+// ParseMessage converts raw MIME content plus SMTP envelope data into Message.
 func ParseMessage(r io.Reader, envelopeFrom string, envelopeTo []string) (email.Message, error) {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {

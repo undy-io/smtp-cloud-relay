@@ -41,6 +41,7 @@ type sendEmailAPI interface {
 	SendEmail(ctx context.Context, params *sesv2.SendEmailInput, optFns ...func(*sesv2.Options)) (*sesv2.SendEmailOutput, error)
 }
 
+// Provider implements the async submit and poll contract for SES v2.
 type Provider struct {
 	client           sendEmailAPI
 	sender           string
@@ -75,10 +76,14 @@ type SendError struct {
 
 var _ email.DeliveryError = (*SendError)(nil)
 
+// ProviderName identifies SES as the delivery provider.
 func (e *SendError) ProviderName() string { return providerName }
+// Temporary reports whether the SES delivery failure is retryable.
 func (e *SendError) Temporary() bool      { return e.Retryable }
+// HTTPStatusCode returns the SES HTTP status code when available.
 func (e *SendError) HTTPStatusCode() int  { return e.StatusCode }
 
+// Error formats the SES delivery failure with retry metadata.
 func (e *SendError) Error() string {
 	prefix := fmt.Sprintf("ses send failed request_id=%s attempt=%d/%d retryable=%t", e.RequestID, e.Attempt, e.Attempts, e.Retryable)
 	if e.StatusCode > 0 {
@@ -90,6 +95,7 @@ func (e *SendError) Error() string {
 	return prefix
 }
 
+// Unwrap returns the underlying SES failure.
 func (e *SendError) Unwrap() error { return e.Err }
 
 func permanentSendError(err error) *SendError {
@@ -174,6 +180,7 @@ func WithClient(client sendEmailAPI) Option {
 	}
 }
 
+// NewProvider validates SES configuration and constructs the provider client.
 func NewProvider(region, sender, endpoint, configurationSet string, logger *slog.Logger, opts ...Option) (*Provider, error) {
 	region = strings.TrimSpace(region)
 	sender = strings.TrimSpace(sender)
@@ -590,6 +597,7 @@ type exponentialBackoff struct {
 	base time.Duration
 }
 
+// BackoffDelay returns the exponential retry delay for the given attempt.
 func (b exponentialBackoff) BackoffDelay(attempt int, _ error) (time.Duration, error) {
 	if b.base <= 0 {
 		return defaultRetryBaseDelay, nil

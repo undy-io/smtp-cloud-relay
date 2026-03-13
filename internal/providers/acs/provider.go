@@ -36,6 +36,7 @@ const (
 	maxDuration                    = time.Duration(1<<63 - 1)
 )
 
+// Provider implements the async submit and poll contract for ACS Email.
 type Provider struct {
 	endpoint           *url.URL
 	accessKey          []byte
@@ -193,12 +194,16 @@ type SendError struct {
 
 var _ email.DeliveryError = (*SendError)(nil)
 
+// ProviderName identifies ACS as the delivery provider.
 func (e *SendError) ProviderName() string { return "acs" }
 
+// Temporary reports whether the delivery failure is retryable.
 func (e *SendError) Temporary() bool { return e.Retryable }
 
+// HTTPStatusCode returns the ACS HTTP status code when available.
 func (e *SendError) HTTPStatusCode() int { return e.StatusCode }
 
+// Error formats the ACS delivery failure with retry metadata.
 func (e *SendError) Error() string {
 	prefix := fmt.Sprintf("acs send failed request_id=%s attempt=%d/%d retryable=%t", e.RequestID, e.Attempt, e.Attempts, e.Retryable)
 	if e.StatusCode > 0 {
@@ -210,6 +215,7 @@ func (e *SendError) Error() string {
 	return prefix
 }
 
+// Unwrap returns the underlying ACS failure.
 func (e *SendError) Unwrap() error { return e.Err }
 
 func permanentSendError(requestID string, attempt, attempts int, err error) *SendError {
@@ -250,6 +256,7 @@ func clampAttempt(v int) int {
 	return v
 }
 
+// NewProvider validates ACS configuration and constructs the provider client.
 func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger, opts ...Option) (*Provider, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -306,6 +313,7 @@ func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger,
 	return provider, nil
 }
 
+// Submit posts a new ACS email send operation and returns the accepted operation state.
 func (p *Provider) Submit(ctx context.Context, msg email.Message, operationID string) (email.SubmissionResult, error) {
 	body, err := buildSendRequest(p.sender, msg)
 	if err != nil {
@@ -368,6 +376,7 @@ func (p *Provider) Submit(ctx context.Context, msg email.Message, operationID st
 	return email.SubmissionResult{}, lastErr
 }
 
+// Poll checks the current ACS operation state for operationID.
 func (p *Provider) Poll(ctx context.Context, operationID string) (email.SubmissionStatus, error) {
 	operationID = strings.TrimSpace(operationID)
 	if operationID == "" {
@@ -512,6 +521,7 @@ func normalizeReplyToRecipients(addresses []string) []recipient {
 	return out
 }
 
+// submitOnce performs one signed ACS submit attempt and maps the accepted response.
 func (p *Provider) submitOnce(ctx context.Context, requestID, operationID string, attempt int, body []byte) (email.SubmissionResult, *SendError) {
 	resp, sendErr := p.sendAuthorizedRequest(ctx, requestID, operationID, http.MethodPost, p.sendTarget(), body, attempt)
 	if sendErr != nil {
@@ -569,6 +579,7 @@ func (p *Provider) operationTarget(operationID string) *url.URL {
 	return &target
 }
 
+// sendAuthorizedRequest applies the shared ACS signing flow used by submit and poll.
 func (p *Provider) sendAuthorizedRequest(ctx context.Context, requestID, operationID, method string, target *url.URL, body []byte, attempt int) (*http.Response, *SendError) {
 	contentHash := hashRequestBody(body)
 	xmsDate := time.Now().UTC().Format(http.TimeFormat)

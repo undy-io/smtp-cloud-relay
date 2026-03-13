@@ -14,11 +14,13 @@ type ServerConfig struct {
 	Metrics *Metrics
 }
 
+// Server serves the relay's health, readiness, and metrics endpoints.
 type Server struct {
 	srv    *http.Server
 	logger *slog.Logger
 }
 
+// NewServer constructs the HTTP observability surface for the relay process.
 func NewServer(cfg ServerConfig, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
@@ -51,11 +53,13 @@ func NewServer(cfg ServerConfig, logger *slog.Logger) *Server {
 	}
 }
 
+// ListenAndServe starts the observability HTTP listener.
 func (s *Server) ListenAndServe() error {
 	s.logger.Info("starting observability server", "addr", s.srv.Addr)
 	return s.srv.ListenAndServe()
 }
 
+// Shutdown gracefully stops the observability HTTP listener.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.srv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown observability server: %w", err)

@@ -25,6 +25,8 @@ import (
 	"github.com/undy-io/smtp-cloud-relay/internal/spool"
 )
 
+// main owns process-level startup ordering: config, provider runtime, spool,
+// worker recovery, SMTP listeners, and observability.
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
@@ -186,6 +188,7 @@ func main() {
 	}
 }
 
+// buildMessageHandler wires the live SMTP request path onto durable enqueue only.
 func buildMessageHandler(cfg config.Config, logger *slog.Logger, store spool.Store, metrics *observability.Metrics) (smtprelay.MessageHandler, time.Duration, error) {
 	relayHandler, err := buildRelayHandler(cfg, logger, store, metrics)
 	if err != nil {
@@ -194,6 +197,7 @@ func buildMessageHandler(cfg config.Config, logger *slog.Logger, store spool.Sto
 	return newEnqueueMessageHandler(logger, relayHandler), 0, nil
 }
 
+// buildSenderPolicy compiles the process-wide sender-policy configuration.
 func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
 	return email.NewSenderPolicy(email.SenderPolicyOptions{
 		Mode:                  email.SenderPolicyMode(cfg.SenderPolicyMode),
@@ -309,6 +313,7 @@ type processReadiness struct {
 	recoveryReady atomic.Bool
 }
 
+// Ready reports whether startup recovery completed and SMTP listeners are bound.
 func (r *processReadiness) Ready() bool {
 	if r == nil {
 		return false

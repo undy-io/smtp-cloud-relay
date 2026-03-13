@@ -41,6 +41,7 @@ type MessageHandler interface {
 // MessageHandlerFunc adapts a function into a MessageHandler.
 type MessageHandlerFunc func(ctx context.Context, msg email.Message) error
 
+// HandleMessage invokes f with the parsed SMTP message.
 func (f MessageHandlerFunc) HandleMessage(ctx context.Context, msg email.Message) error {
 	return f(ctx, msg)
 }
@@ -56,6 +57,7 @@ type StaticAuthProvider struct {
 	Password string
 }
 
+// AuthPlain validates the provided SMTP AUTH PLAIN credentials.
 func (p *StaticAuthProvider) AuthPlain(username, password string) error {
 	if subtle.ConstantTimeCompare([]byte(username), []byte(p.Username)) != 1 {
 		return errors.New("invalid username or password")
@@ -88,6 +90,11 @@ type Config struct {
 	Metrics         *observability.Metrics
 }
 
+// Server owns the SMTP listener lifecycle for one process instance.
+//
+// The server is intentionally single-use: one Start call, one shutdown path,
+// and then discard the instance. This keeps readiness and shutdown semantics
+// deterministic around the bound listeners owned by this process.
 type Server struct {
 	smtpServer  *gosmtp.Server
 	smtpsServer *gosmtp.Server
@@ -110,6 +117,7 @@ type managedListener struct {
 	ln   net.Listener
 }
 
+// NewServer validates SMTP listener configuration and constructs the server.
 func NewServer(cfg Config, logger *slog.Logger, handler MessageHandler, authProvider AuthProvider) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -419,6 +427,7 @@ type backend struct {
 	logger *slog.Logger
 }
 
+// NewSession validates the remote address and constructs one SMTP session.
 func (b *backend) NewSession(c *gosmtp.Conn) (gosmtp.Session, error) {
 	remoteIP, remoteAddr, err := remoteAddrIP(c)
 	if err != nil {
@@ -460,6 +469,7 @@ type session struct {
 	metrics      *observability.Metrics
 }
 
+// AuthMechanisms advertises the AUTH methods available for the current session.
 func (s *session) AuthMechanisms() []string {
 	if !s.requireAuth || s.authProvider == nil {
 		return nil
@@ -467,6 +477,7 @@ func (s *session) AuthMechanisms() []string {
 	return []string{sasl.Plain}
 }
 
+// Auth validates the SMTP AUTH exchange for the current session.
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	if !s.requireAuth || s.authProvider == nil {
 		return nil, gosmtp.ErrAuthUnsupported
@@ -485,6 +496,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	}), nil
 }
 
+// Mail records the envelope sender after enforcing session policy.
 func (s *session) Mail(from string, _ *gosmtp.MailOptions) error {
 	if err := s.enforceSessionPolicy(); err != nil {
 		return err
@@ -493,6 +505,7 @@ func (s *session) Mail(from string, _ *gosmtp.MailOptions) error {
 	return nil
 }
 
+// Rcpt appends one envelope recipient after enforcing session policy.
 func (s *session) Rcpt(to string, _ *gosmtp.RcptOptions) error {
 	if err := s.enforceSessionPolicy(); err != nil {
 		return err
@@ -501,6 +514,7 @@ func (s *session) Rcpt(to string, _ *gosmtp.RcptOptions) error {
 	return nil
 }
 
+// Data parses the message body and hands it to the configured message handler.
 func (s *session) Data(r io.Reader) error {
 	if err := s.enforceSessionPolicy(); err != nil {
 		return err
@@ -538,11 +552,13 @@ func (s *session) Data(r io.Reader) error {
 	return nil
 }
 
+// Reset clears the current envelope state after a transaction finishes.
 func (s *session) Reset() {
 	s.from = ""
 	s.to = nil
 }
 
+// Logout ends the SMTP session.
 func (s *session) Logout() error {
 	return nil
 }

@@ -3,15 +3,19 @@ package email
 import "strings"
 
 const (
+	// TraceHeaderEnvelopeFrom preserves the original SMTP envelope sender.
 	TraceHeaderEnvelopeFrom = "X-SMTP-Relay-Envelope-From"
+	// TraceHeaderHeaderFrom preserves the parsed message header From address.
 	TraceHeaderHeaderFrom   = "X-SMTP-Relay-Header-From"
 )
 
+// TraceHeader represents one relay-owned outbound trace header.
 type TraceHeader struct {
 	Name  string
 	Value string
 }
 
+// SenderTraceHeaders returns the non-empty sender trace headers for msg.
 func SenderTraceHeaders(msg Message) []TraceHeader {
 	headers := make([]TraceHeader, 0, 2)
 
@@ -25,6 +29,7 @@ func SenderTraceHeaders(msg Message) []TraceHeader {
 	return headers
 }
 
+// SenderTraceHeaderMap returns sender trace headers as a header map.
 func SenderTraceHeaderMap(msg Message) map[string]string {
 	headers := SenderTraceHeaders(msg)
 	if len(headers) == 0 {

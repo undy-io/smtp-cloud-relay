@@ -14,23 +14,29 @@ const (
 	SenderPolicyReasonDisallowedSenderDomain = "disallowed_sender_domain"
 )
 
+// SenderPolicyMode controls whether sender-policy failures rewrite or reject.
 type SenderPolicyMode string
 
 const (
+	// SenderPolicyRewrite accepts the message and drops disallowed original-sender intent.
 	SenderPolicyRewrite SenderPolicyMode = "rewrite"
+	// SenderPolicyStrict rejects the message when the original-sender policy fails.
 	SenderPolicyStrict  SenderPolicyMode = "strict"
 )
 
+// SenderPolicyOptions configures startup-time compilation of sender rules.
 type SenderPolicyOptions struct {
 	Mode                  SenderPolicyMode
 	AllowedDomainPatterns []string
 }
 
+// SenderPolicy is the compiled sender-domain policy used on the SMTP path.
 type SenderPolicy struct {
 	mode     SenderPolicyMode
 	matchers []senderDomainMatcher
 }
 
+// SenderPolicyResult captures the normalized message and decision metadata.
 type SenderPolicyResult struct {
 	Message          Message
 	OriginalSender   string
@@ -38,10 +44,12 @@ type SenderPolicyResult struct {
 	DecisionReason   string
 }
 
+// SenderPolicyError reports a permanent sender-policy rejection.
 type SenderPolicyError struct {
 	Reason string
 }
 
+// Error returns the stable sender-policy rejection message.
 func (e *SenderPolicyError) Error() string {
 	if e == nil {
 		return ""
@@ -49,6 +57,7 @@ func (e *SenderPolicyError) Error() string {
 	return fmt.Sprintf("sender policy rejected message: %s", e.Reason)
 }
 
+// AsSenderPolicyError unwraps err into a SenderPolicyError when available.
 func AsSenderPolicyError(err error) (*SenderPolicyError, bool) {
 	var policyErr *SenderPolicyError
 	if !errors.As(err, &policyErr) {
@@ -57,6 +66,7 @@ func AsSenderPolicyError(err error) (*SenderPolicyError, bool) {
 	return policyErr, true
 }
 
+// NewSenderPolicy compiles the configured sender-domain matchers.
 func NewSenderPolicy(opts SenderPolicyOptions) (SenderPolicy, error) {
 	mode := SenderPolicyMode(strings.ToLower(strings.TrimSpace(string(opts.Mode))))
 	switch mode {
@@ -83,6 +93,7 @@ func NewSenderPolicy(opts SenderPolicyOptions) (SenderPolicy, error) {
 	}, nil
 }
 
+// ApplySenderPolicy selects and validates the original sender for a message.
 func ApplySenderPolicy(msg Message, policy SenderPolicy) (SenderPolicyResult, error) {
 	result := SenderPolicyResult{Message: msg}
 
@@ -167,6 +178,7 @@ type exactDomainMatcher struct {
 	domain string
 }
 
+// Match reports whether domain satisfies the exact-domain matcher.
 func (m exactDomainMatcher) Match(domain string) bool {
 	return strings.EqualFold(domain, m.domain)
 }
@@ -175,6 +187,7 @@ type regexDomainMatcher struct {
 	pattern *regexp.Regexp
 }
 
+// Match reports whether domain satisfies the regex-domain matcher.
 func (m regexDomainMatcher) Match(domain string) bool {
 	return m.pattern.MatchString(domain)
 }
@@ -183,6 +196,7 @@ type singleLabelGlobMatcher struct {
 	suffix string
 }
 
+// Match reports whether domain satisfies the one-label wildcard matcher.
 func (m singleLabelGlobMatcher) Match(domain string) bool {
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	if domain == "" || strings.EqualFold(domain, m.suffix) {

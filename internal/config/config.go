@@ -272,6 +272,7 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// Validate enforces cross-field runtime configuration invariants.
 func (c Config) Validate() error {
 	switch c.DeliveryMode {
 	case "acs", "noop", "ses":
@@ -375,6 +376,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// ParseCIDRs parses a list of CIDR strings into canonical prefixes.
 func ParseCIDRs(values []string) ([]netip.Prefix, error) {
 	out := make([]netip.Prefix, 0, len(values))
 	for _, raw := range values {
