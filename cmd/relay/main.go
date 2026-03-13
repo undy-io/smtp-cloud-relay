@@ -47,13 +47,13 @@ func main() {
 	workerCfg := spool.WorkerConfig{
 		SubmitTimeout:    deliveryRuntime.SendTimeout,
 		FinalizeTimeout:  spool.DefaultFinalizeTimeout,
-		PollInterval:     spool.DefaultPollInterval,
+		PollInterval:     time.Duration(cfg.SpoolPollIntervalMS) * time.Millisecond,
 		RetryAttempts:    cfg.DeliveryRetryAttempts,
 		RetryBaseDelay:   time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond,
 		SubmittedTimeout: spool.DefaultSubmittedTimeout,
 	}
 
-	backgroundStore, worker, err := buildBackgroundDelivery(spool.DefaultRoot, logger, deliveryRuntime, workerCfg)
+	backgroundStore, worker, err := buildBackgroundDelivery(cfg.SpoolDir, logger, deliveryRuntime, workerCfg)
 	if err != nil {
 		logger.Error("failed to initialize background delivery", "error", err)
 		os.Exit(1)

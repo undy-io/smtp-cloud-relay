@@ -52,6 +52,15 @@ delivery:
   httpMaxIdleConnsPerHost: 50
   httpIdleConnTimeoutMS: 90000
 
+spool:
+  dir: /var/lib/smtp-cloud-relay/spool
+  pollIntervalMS: 1000
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+    existingClaim: ""
+
 proxy:
   httpProxy: ""
   httpsProxy: ""
@@ -91,13 +100,13 @@ ses:
 secrets:
   create: true
   existingSecret: ""
-  acsConnectionString: ""
-  acsSender: ""
+  acsConnectionString: "endpoint=https://example.communication.azure.us;accesskey=REPLACE_ME" # bootstrap placeholder; override for real ACS delivery
+  acsSender: "no-reply@example.com" # bootstrap placeholder; override for real ACS delivery
   sesAccessKeyID: ""
   sesSecretAccessKey: ""
   sesSessionToken: ""
-  smtpAuthUsername: ""
-  smtpAuthPassword: ""
+  smtpAuthUsername: "relay" # bootstrap placeholder; override for real deployments
+  smtpAuthPassword: "change-me" # bootstrap placeholder; override for real deployments
   outboundTLSCAPEM: ""
   acsTLSCAPEM: "" # deprecated alias for outboundTLSCAPEM
   keys:

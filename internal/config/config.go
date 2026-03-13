@@ -6,6 +6,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/undy-io/smtp-cloud-relay/internal/spool"
 )
 
 const (
@@ -25,6 +28,8 @@ const (
 	defaultDeliveryHTTPMaxIdleConnsPerHost = 50
 	defaultDeliveryHTTPIdleConnTimeoutMS   = 90000
 	defaultSenderPolicyMode                = "rewrite"
+	defaultSpoolDir                       = spool.DefaultRoot
+	defaultSpoolPollIntervalMS            = int(spool.DefaultPollInterval / time.Millisecond)
 )
 
 // Config is runtime configuration loaded from env vars and/or mounted secret files.
@@ -52,6 +57,8 @@ type Config struct {
 	DeliveryHTTPMaxIdleConns        int
 	DeliveryHTTPMaxIdleConnsPerHost int
 	DeliveryHTTPIdleConnTimeoutMS   int
+	SpoolDir                        string
+	SpoolPollIntervalMS             int
 
 	ACSEndpoint         string
 	ACSConnectionString string
@@ -87,6 +94,8 @@ func Load() (Config, error) {
 		DeliveryHTTPMaxIdleConns:        defaultDeliveryHTTPMaxIdleConns,
 		DeliveryHTTPMaxIdleConnsPerHost: defaultDeliveryHTTPMaxIdleConnsPerHost,
 		DeliveryHTTPIdleConnTimeoutMS:   defaultDeliveryHTTPIdleConnTimeoutMS,
+		SpoolDir:                        defaultSpoolDir,
+		SpoolPollIntervalMS:             defaultSpoolPollIntervalMS,
 	}
 
 	var err error
@@ -193,6 +202,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.DeliveryHTTPIdleConnTimeoutMS, err = envOrFileInt("DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS", defaultDeliveryHTTPIdleConnTimeoutMS)
+	if err != nil {
+		return Config{}, err
+	}
+	if v, err := envOrFile("SPOOL_DIR"); err != nil {
+		return Config{}, err
+	} else if v != "" {
+		cfg.SpoolDir = v
+	}
+	cfg.SpoolPollIntervalMS, err = envOrFileInt("SPOOL_POLL_INTERVAL_MS", defaultSpoolPollIntervalMS)
 	if err != nil {
 		return Config{}, err
 	}
@@ -346,6 +364,12 @@ func (c Config) Validate() error {
 	}
 	if c.DeliveryHTTPIdleConnTimeoutMS < 1 {
 		return fmt.Errorf("DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS must be >= 1")
+	}
+	if strings.TrimSpace(c.SpoolDir) == "" {
+		return fmt.Errorf("SPOOL_DIR must be non-empty")
+	}
+	if c.SpoolPollIntervalMS < 1 {
+		return fmt.Errorf("SPOOL_POLL_INTERVAL_MS must be >= 1")
 	}
 
 	return nil

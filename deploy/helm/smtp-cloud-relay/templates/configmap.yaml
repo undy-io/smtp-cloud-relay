@@ -29,6 +29,8 @@ data:
   DELIVERY_HTTP_MAX_IDLE_CONNS: {{ .Values.delivery.httpMaxIdleConns | quote }}
   DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST: {{ .Values.delivery.httpMaxIdleConnsPerHost | quote }}
   DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS: {{ .Values.delivery.httpIdleConnTimeoutMS | quote }}
+  SPOOL_DIR: {{ .Values.spool.dir | quote }}
+  SPOOL_POLL_INTERVAL_MS: {{ .Values.spool.pollIntervalMS | quote }}
 
   ACS_ENDPOINT: {{ .Values.acs.endpoint | quote }}
   SES_REGION: {{ .Values.ses.region | quote }}

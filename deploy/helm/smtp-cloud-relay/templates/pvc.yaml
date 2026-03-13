@@ -1,0 +1,17 @@
+{{- if and .Values.spool.persistence.enabled (not .Values.spool.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "smtp-cloud-relay.spoolPvcName" . }}
+  labels:
+    {{- include "smtp-cloud-relay.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.spool.persistence.size | quote }}
+  {{- if .Values.spool.persistence.storageClass }}
+  storageClassName: {{ .Values.spool.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

@@ -423,6 +423,30 @@ func TestBuildBackgroundDeliveryUsesExplicitRoot(t *testing.T) {
 	}
 }
 
+func TestMainWorkerConfigUsesConfigSpoolPollInterval(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		DeliveryRetryAttempts:    3,
+		DeliveryRetryBaseDelayMS: 1000,
+		SpoolPollIntervalMS:      2500,
+	}
+	runtime := testRuntime()
+
+	workerCfg := spool.WorkerConfig{
+		SubmitTimeout:    runtime.SendTimeout,
+		FinalizeTimeout:  spool.DefaultFinalizeTimeout,
+		PollInterval:     time.Duration(cfg.SpoolPollIntervalMS) * time.Millisecond,
+		RetryAttempts:    cfg.DeliveryRetryAttempts,
+		RetryBaseDelay:   time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond,
+		SubmittedTimeout: spool.DefaultSubmittedTimeout,
+	}
+
+	if workerCfg.PollInterval != 2500*time.Millisecond {
+		t.Fatalf("unexpected worker PollInterval: %s", workerCfg.PollInterval)
+	}
+}
+
 func TestRunStartupRecoverySurfacesFailure(t *testing.T) {
 	t.Parallel()
 

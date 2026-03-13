@@ -128,6 +128,8 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            - name: spool
+              mountPath: {{ .Values.spool.dir | quote }}
             {{- if or .Values.smtp.starttlsEnabled .Values.smtp.smtpsListenAddr }}
             - name: smtp-tls
               mountPath: /etc/smtp-tls
@@ -139,6 +141,13 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        - name: spool
+          {{- if .Values.spool.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "smtp-cloud-relay.spoolPvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         {{- if or .Values.smtp.starttlsEnabled .Values.smtp.smtpsListenAddr }}
         - name: smtp-tls
           secret:

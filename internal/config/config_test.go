@@ -43,6 +43,12 @@ func TestLoadDefaultsWithRequiredSecurityEnv(t *testing.T) {
 	if cfg.DeliveryHTTPIdleConnTimeoutMS != 90000 {
 		t.Fatalf("unexpected DeliveryHTTPIdleConnTimeoutMS: %d", cfg.DeliveryHTTPIdleConnTimeoutMS)
 	}
+	if cfg.SpoolDir != "/var/lib/smtp-cloud-relay/spool" {
+		t.Fatalf("unexpected SpoolDir: %q", cfg.SpoolDir)
+	}
+	if cfg.SpoolPollIntervalMS != 1000 {
+		t.Fatalf("unexpected SpoolPollIntervalMS: %d", cfg.SpoolPollIntervalMS)
+	}
 	if cfg.OutboundTLSCAFile != "" {
 		t.Fatalf("unexpected OutboundTLSCAFile default: %q", cfg.OutboundTLSCAFile)
 	}
@@ -258,6 +264,13 @@ func TestLoadValidationErrors(t *testing.T) {
 		substr string
 	}{
 		{
+			name: "spool poll interval positive",
+			env: map[string]string{
+				"SPOOL_POLL_INTERVAL_MS": "0",
+			},
+			substr: "SPOOL_POLL_INTERVAL_MS must be >= 1",
+		},
+		{
 			name: "invalid delivery mode",
 			env: map[string]string{
 				"DELIVERY_MODE": "bad",
@@ -458,6 +471,38 @@ func TestLoadValidationErrors(t *testing.T) {
 				t.Fatalf("expected error to contain %q, got %q", tc.substr, err.Error())
 			}
 		})
+	}
+}
+
+func TestConfigValidateRejectsEmptySpoolDir(t *testing.T) {
+	cfg := Config{
+		DeliveryMode:                    "noop",
+		SMTPAllowedCIDRs:                []string{"127.0.0.1/32"},
+		SMTPRequireAuth:                 true,
+		SMTPAuthProvider:                "static",
+		SMTPAuthUsername:                "jira",
+		SMTPAuthPassword:                "secret",
+		SMTPStartTLSEnabled:             true,
+		SMTPTLSCertFile:                 "/tls/tls.crt",
+		SMTPTLSKeyFile:                  "/tls/tls.key",
+		SMTPMaxInflightSends:            1,
+		SenderPolicyMode:                "rewrite",
+		DeliveryRetryAttempts:           3,
+		DeliveryRetryBaseDelayMS:        1000,
+		DeliveryHTTPTimeoutMS:           30000,
+		DeliveryHTTPMaxIdleConns:        200,
+		DeliveryHTTPMaxIdleConnsPerHost: 50,
+		DeliveryHTTPIdleConnTimeoutMS:   90000,
+		SpoolDir:                        "   ",
+		SpoolPollIntervalMS:             1000,
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "SPOOL_DIR must be non-empty") {
+		t.Fatalf("expected spool dir validation error, got %q", err.Error())
 	}
 }
 

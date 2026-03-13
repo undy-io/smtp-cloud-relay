@@ -1368,7 +1368,7 @@ Use this format when adding or revising tasks:
   - full end-to-end coverage in `QA-001`
 
 ### SPOOL-006 — Add Spool Config And Helm Persistence
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On: SPOOL-005B
 - Goal: make the spool usable in Kubernetes with durable storage.

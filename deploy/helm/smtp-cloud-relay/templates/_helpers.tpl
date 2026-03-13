@@ -48,6 +48,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{- define "smtp-cloud-relay.spoolPvcName" -}}
+{{- if .Values.spool.persistence.existingClaim -}}
+{{- .Values.spool.persistence.existingClaim -}}
+{{- else -}}
+{{- printf "%s-spool" (include "smtp-cloud-relay.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "smtp-cloud-relay.validateValues" -}}
 {{- $mode := lower (default "acs" .Values.deliveryMode) -}}
 {{- if not (has $mode (list "acs" "ses" "noop")) -}}
@@ -78,5 +86,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and .Values.secrets.create .Values.secrets.sesSessionToken (or (not $access) (not $secret)) -}}
 {{- fail "secrets.sesSessionToken requires both secrets.sesAccessKeyID and secrets.sesSecretAccessKey when secrets.create=true" -}}
 {{- end -}}
+{{- end -}}
+
+{{- if and (has $mode (list "acs" "ses")) (gt (int .Values.replicaCount) 1) -}}
+{{- fail "replicaCount > 1 is not supported for deliveryMode=acs or ses because SQLite spool storage requires a single writer on block-backed ReadWriteOnce storage" -}}
+{{- end -}}
+
+{{- if and (has $mode (list "acs" "ses")) (not .Values.spool.persistence.enabled) -}}
+{{- fail "spool.persistence.enabled must be true for deliveryMode=acs or ses because durable relay semantics require persistent single-writer block storage" -}}
 {{- end -}}
 {{- end -}}
