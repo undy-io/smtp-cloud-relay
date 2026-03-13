@@ -969,7 +969,7 @@ Use this format when adding or revising tasks:
   - env and Helm configuration in `SPOOL-006`
 
 ### SPOOL-002E — Switch SMTP Success To Durable Enqueue
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-002D

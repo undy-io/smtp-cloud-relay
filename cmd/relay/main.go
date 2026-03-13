@@ -84,7 +84,7 @@ func main() {
 		}
 	}
 
-	handler, handlerTimeout, err := buildMessageHandler(cfg, logger, deliveryRuntime)
+	handler, handlerTimeout, err := buildMessageHandler(cfg, logger, backgroundStore)
 	if err != nil {
 		_ = backgroundStore.Close()
 		logger.Error("failed to initialize delivery handler", "error", err)
@@ -172,18 +172,12 @@ func main() {
 	}
 }
 
-func buildMessageHandler(cfg config.Config, logger *slog.Logger, runtime providers.Runtime) (smtprelay.MessageHandler, time.Duration, error) {
-	if runtime.Provider == nil {
-		return nil, 0, fmt.Errorf("delivery runtime provider cannot be nil")
-	}
-
-	senderPolicy, err := buildSenderPolicy(cfg)
+func buildMessageHandler(cfg config.Config, logger *slog.Logger, store spool.Store) (smtprelay.MessageHandler, time.Duration, error) {
+	relayHandler, err := buildRelayHandler(cfg, logger, store)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	handlerTimeout := runtime.HandlerTimeout
-	return newDirectSendMessageHandler(cfg, logger, senderPolicy, runtime.Provider.Send, runtime.SendTimeout), handlerTimeout, nil
+	return newEnqueueMessageHandler(logger, relayHandler), 0, nil
 }
 
 func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
@@ -193,14 +187,56 @@ func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
 	})
 }
 
-// buildRelayHandler constructs the durable-enqueue relay service without wiring it into SMTP yet.
+// buildRelayHandler constructs the durable-enqueue relay service used by the SMTP adapter.
 func buildRelayHandler(cfg config.Config, logger *slog.Logger, store spool.Store) (*relaysvc.Handler, error) {
 	senderPolicy, err := buildSenderPolicy(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return relaysvc.NewHandler(logger, senderPolicy, store, cfg.SMTPMaxInflightSends)
+	return relaysvc.NewHandler(logger, cfg.SenderPolicyMode, senderPolicy, store, cfg.SMTPMaxInflightSends)
+}
+
+func newEnqueueMessageHandler(logger *slog.Logger, relayHandler *relaysvc.Handler) smtprelay.MessageHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	senderPolicyRejectedError := &gosmtp.SMTPError{Code: 554, EnhancedCode: gosmtp.EnhancedCode{5, 7, 1}, Message: "sender rejected by relay policy"}
+	relayBusyError := &gosmtp.SMTPError{Code: 451, EnhancedCode: gosmtp.EnhancedCode{4, 3, 2}, Message: "relay busy, try again later"}
+	temporaryRelayError := &gosmtp.SMTPError{Code: 451, EnhancedCode: gosmtp.EnhancedCode{4, 3, 0}, Message: "temporary relay failure"}
+
+	return smtprelay.MessageHandlerFunc(func(ctx context.Context, msg email.Message) error {
+		err := relayHandler.HandleMessage(ctx, msg)
+		if err == nil {
+			return nil
+		}
+
+		if _, ok := email.AsSenderPolicyError(err); ok {
+			return senderPolicyRejectedError
+		}
+		if _, ok := relaysvc.AsBusyError(err); ok {
+			return relayBusyError
+		}
+		if storeErr, ok := spool.AsStoreError(err); ok {
+			logger.Error("failed to durably enqueue message",
+				"envelope_from", msg.EnvelopeFrom,
+				"header_from", msg.HeaderFrom,
+				"error", storeErr,
+			)
+			return temporaryRelayError
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return temporaryRelayError
+		}
+
+		logger.Error("unexpected durable enqueue failure",
+			"envelope_from", msg.EnvelopeFrom,
+			"header_from", msg.HeaderFrom,
+			"error", err,
+		)
+		return temporaryRelayError
+	})
 }
 
 // buildBackgroundDelivery constructs the durable spool store and background worker before SMTP startup.

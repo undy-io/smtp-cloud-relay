@@ -362,6 +362,7 @@ func TestServerReturnsHandlerSMTPErrorOnWire(t *testing.T) {
 		EnhancedCode: gosmtp.EnhancedCode{5, 7, 1},
 		Message:      "policy rejection",
 	}
+	handlerDeadlineCh := make(chan bool, 1)
 
 	srv, err := NewServer(Config{
 		ListenAddr:      addr,
@@ -370,7 +371,10 @@ func TestServerReturnsHandlerSMTPErrorOnWire(t *testing.T) {
 		RequireTLS:      true,
 		StartTLSEnabled: true,
 		TLSConfig:       testTLSConfig(t),
-	}, testLogger(), MessageHandlerFunc(func(context.Context, email.Message) error {
+		HandlerTimeout:  0,
+	}, testLogger(), MessageHandlerFunc(func(ctx context.Context, _ email.Message) error {
+		_, hasDeadline := ctx.Deadline()
+		handlerDeadlineCh <- hasDeadline
 		return handlerErr
 	}), &StaticAuthProvider{
 		Username: "jira",
@@ -397,6 +401,14 @@ func TestServerReturnsHandlerSMTPErrorOnWire(t *testing.T) {
 	}
 	if !strings.Contains(msg, "policy rejection") {
 		t.Fatalf("expected handler message in response, got %q", msg)
+	}
+	select {
+	case hasDeadline := <-handlerDeadlineCh:
+		if hasDeadline {
+			t.Fatal("expected handler context without extra timeout")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handler deadline signal")
 	}
 }
 

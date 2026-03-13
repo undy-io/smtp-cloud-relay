@@ -13,6 +13,7 @@ import (
 // Handler durably enqueues policy-normalized messages into the spool.
 type Handler struct {
 	logger       *slog.Logger
+	policyMode   string
 	senderPolicy email.SenderPolicy
 	store        spool.Store
 	inflight     chan struct{}
@@ -43,7 +44,7 @@ func AsBusyError(err error) (*BusyError, bool) {
 }
 
 // NewHandler constructs the relay-owned durable enqueue service.
-func NewHandler(logger *slog.Logger, senderPolicy email.SenderPolicy, store spool.Store, maxInflight int) (*Handler, error) {
+func NewHandler(logger *slog.Logger, senderPolicyMode string, senderPolicy email.SenderPolicy, store spool.Store, maxInflight int) (*Handler, error) {
 	if store == nil {
 		return nil, fmt.Errorf("spool store is required")
 	}
@@ -56,6 +57,7 @@ func NewHandler(logger *slog.Logger, senderPolicy email.SenderPolicy, store spoo
 
 	return &Handler{
 		logger:       logger,
+		policyMode:   senderPolicyMode,
 		senderPolicy: senderPolicy,
 		store:        store,
 		inflight:     make(chan struct{}, maxInflight),
@@ -72,6 +74,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg email.Message) error {
 	if err != nil {
 		if policyErr, ok := email.AsSenderPolicyError(err); ok {
 			h.logger.Warn("smtp sender rejected by policy",
+				"sender_policy_mode", h.policyMode,
 				"sender_policy_reason", policyErr.Reason,
 				"envelope_from", msg.EnvelopeFrom,
 				"header_from", msg.HeaderFrom,
@@ -91,6 +94,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg email.Message) error {
 
 	if policyResult.DecisionReason != "" {
 		h.logger.Info("smtp sender policy dropped original sender intent",
+			"sender_policy_mode", h.policyMode,
 			"sender_policy_reason", policyResult.DecisionReason,
 			"envelope_from", msg.EnvelopeFrom,
 			"header_from", msg.HeaderFrom,

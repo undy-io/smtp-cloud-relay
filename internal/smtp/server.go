@@ -149,7 +149,7 @@ func NewServer(cfg Config, logger *slog.Logger, handler MessageHandler, authProv
 		writeTimeout = defaultWriteTimeout
 	}
 	handlerTimeout := cfg.HandlerTimeout
-	if handlerTimeout <= 0 {
+	if handlerTimeout < 0 {
 		handlerTimeout = defaultHandlerTimeout
 	}
 

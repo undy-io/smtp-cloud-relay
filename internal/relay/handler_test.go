@@ -76,7 +76,7 @@ func TestNewHandlerRejectsInvalidMaxInflight(t *testing.T) {
 	t.Parallel()
 
 	policy := mustTestSenderPolicy(t, email.SenderPolicyOptions{Mode: email.SenderPolicyRewrite})
-	_, err := NewHandler(testLogger(), policy, &stubStore{}, 0)
+	_, err := NewHandler(testLogger(), "rewrite", policy, &stubStore{}, 0)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -229,7 +229,7 @@ func mustNewHandler(t *testing.T, opts email.SenderPolicyOptions, store spool.St
 	t.Helper()
 
 	policy := mustTestSenderPolicy(t, opts)
-	handler, err := NewHandler(testLogger(), policy, store, maxInflight)
+	handler, err := NewHandler(testLogger(), string(opts.Mode), policy, store, maxInflight)
 	if err != nil {
 		t.Fatalf("NewHandler() error: %v", err)
 	}
