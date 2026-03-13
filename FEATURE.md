@@ -1263,7 +1263,7 @@ Use this format when adding or revising tasks:
 #### SPOOL-005 Internal Checkpoints
 
 ### SPOOL-005A — Background Delivery Bootstrap And Recovery
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-003

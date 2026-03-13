@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	"github.com/undy-io/smtp-cloud-relay/internal/config"
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/providers"
 	"github.com/undy-io/smtp-cloud-relay/internal/spool"
 )
 
@@ -231,7 +234,7 @@ func TestBuildMessageHandlerRejectsInvalidSenderPolicyRegex(t *testing.T) {
 		SenderAllowedDomains: []string{"re:("},
 	}
 
-	_, _, err := buildMessageHandler(handlerCfg, testMainLogger())
+	_, _, err := buildMessageHandler(handlerCfg, testMainLogger(), testRuntime())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -247,9 +250,32 @@ func TestBuildMessageHandlerRejectsInvalidSenderPolicyGlob(t *testing.T) {
 		SenderAllowedDomains: []string{"glob:*.*.example.com"},
 	}
 
-	_, _, err := buildMessageHandler(handlerCfg, testMainLogger())
+	_, _, err := buildMessageHandler(handlerCfg, testMainLogger(), testRuntime())
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestBuildMessageHandlerUsesPrebuiltRuntime(t *testing.T) {
+	t.Parallel()
+
+	handler, handlerTimeout, err := buildMessageHandler(config.Config{
+		DeliveryMode:         "noop",
+		SMTPMaxInflightSends: 1,
+		SenderPolicyMode:     "rewrite",
+	}, testMainLogger(), providers.Runtime{
+		Provider:       stubDeliveryProvider{},
+		SendTimeout:    3 * time.Second,
+		HandlerTimeout: 8 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("buildMessageHandler() error: %v", err)
+	}
+	if handler == nil {
+		t.Fatal("expected handler, got nil")
+	}
+	if handlerTimeout != 8*time.Second {
+		t.Fatalf("unexpected handler timeout: got %s want %s", handlerTimeout, 8*time.Second)
 	}
 }
 
@@ -269,6 +295,40 @@ func TestBuildRelayHandlerConstructsHandlerWithoutProviders(t *testing.T) {
 	}
 }
 
+func TestBuildBackgroundDeliveryUsesExplicitRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store, worker, err := buildBackgroundDelivery(root, testMainLogger(), testRuntime())
+	if err != nil {
+		t.Fatalf("buildBackgroundDelivery() error: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+	}()
+
+	if worker == nil {
+		t.Fatal("expected worker, got nil")
+	}
+	for _, rel := range []string{"spool.db", "payloads", "payload-orphans", "staging"} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Fatalf("expected %s to exist: %v", rel, err)
+		}
+	}
+}
+
+func TestRunStartupRecoverySurfacesFailure(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("recover failed")
+	_, err := runStartupRecovery(context.Background(), testMainLogger(), stubRecoverer{err: wantErr}, time.Now().UTC())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("unexpected error: got %v want %v", err, wantErr)
+	}
+}
+
 func testMainLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -281,6 +341,14 @@ func mustTestSenderPolicy(t *testing.T, opts email.SenderPolicyOptions) email.Se
 		t.Fatalf("NewSenderPolicy() error: %v", err)
 	}
 	return policy
+}
+
+func testRuntime() providers.Runtime {
+	return providers.Runtime{
+		Provider:       stubDeliveryProvider{},
+		SendTimeout:    time.Second,
+		HandlerTimeout: 2 * time.Second,
+	}
 }
 
 type stubRelayStore struct{}
@@ -311,4 +379,24 @@ func (stubRelayStore) MarkDeadLetter(context.Context, spool.Record, *spool.LastE
 
 func (stubRelayStore) Recover(context.Context, time.Time) (spool.RecoveryResult, error) {
 	panic("unexpected Recover call")
+}
+
+type stubDeliveryProvider struct{}
+
+func (stubDeliveryProvider) Send(context.Context, email.Message) error { return nil }
+
+func (stubDeliveryProvider) Submit(context.Context, email.Message, string) (email.SubmissionResult, error) {
+	return email.SubmissionResult{State: email.SubmissionStateSucceeded}, nil
+}
+
+func (stubDeliveryProvider) Poll(context.Context, string) (email.SubmissionStatus, error) {
+	return email.SubmissionStatus{State: email.SubmissionStateSucceeded}, nil
+}
+
+type stubRecoverer struct {
+	err error
+}
+
+func (s stubRecoverer) Recover(context.Context, time.Time) (spool.RecoveryResult, error) {
+	return spool.RecoveryResult{}, s.err
 }

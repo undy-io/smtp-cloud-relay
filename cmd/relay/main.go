@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,8 +35,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	deliveryRuntime, err := providers.Build(cfg, logger)
+	if err != nil {
+		logger.Error("failed to initialize delivery runtime", "error", err)
+		os.Exit(1)
+	}
+
+	backgroundStore, worker, err := buildBackgroundDelivery(spool.DefaultRoot, logger, deliveryRuntime)
+	if err != nil {
+		logger.Error("failed to initialize background delivery", "error", err)
+		os.Exit(1)
+	}
+
+	recovery, err := runStartupRecovery(ctx, logger, worker, time.Now().UTC())
+	if err != nil {
+		_ = backgroundStore.Close()
+		logger.Error("failed to recover spool state", "error", err)
+		os.Exit(1)
+	}
+	logRecoverySummary(logger, recovery)
+
 	allowedCIDRs, err := config.ParseCIDRs(cfg.SMTPAllowedCIDRs)
 	if err != nil {
+		_ = backgroundStore.Close()
 		logger.Error("failed to parse SMTP allowlist", "error", err)
 		os.Exit(1)
 	}
@@ -44,13 +69,15 @@ func main() {
 	if cfg.SMTPStartTLSEnabled || strings.TrimSpace(cfg.SMTPSListenAddr) != "" {
 		tlsCfg, err = loadSMTPServerTLS(cfg.SMTPTLSCertFile, cfg.SMTPTLSKeyFile)
 		if err != nil {
+			_ = backgroundStore.Close()
 			logger.Error("failed to load SMTP TLS certificate", "error", err)
 			os.Exit(1)
 		}
 	}
 
-	handler, handlerTimeout, err := buildMessageHandler(cfg, logger)
+	handler, handlerTimeout, err := buildMessageHandler(cfg, logger, deliveryRuntime)
 	if err != nil {
+		_ = backgroundStore.Close()
 		logger.Error("failed to initialize delivery handler", "error", err)
 		os.Exit(1)
 	}
@@ -71,6 +98,7 @@ func main() {
 		HandlerTimeout:  handlerTimeout,
 	}, logger, handler, authProvider)
 	if err != nil {
+		_ = backgroundStore.Close()
 		logger.Error("failed to create smtp server", "error", err)
 		os.Exit(1)
 	}
@@ -79,10 +107,14 @@ func main() {
 	ready.Store(false)
 	obsServer := observability.NewServer(cfg.HTTPListenAddr, logger, ready.Load)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		if err := worker.Start(ctx); err != nil {
+			errCh <- err
+		}
+	}()
 	go func() {
 		if err := smtpServer.Start(ctx); err != nil {
 			errCh <- err
@@ -125,12 +157,15 @@ func main() {
 	if err := obsServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("failed to shutdown observability server", "error", err)
 	}
+	<-workerDone
+	if err := backgroundStore.Close(); err != nil {
+		logger.Error("failed to close spool store", "error", err)
+	}
 }
 
-func buildMessageHandler(cfg config.Config, logger *slog.Logger) (smtprelay.MessageHandler, time.Duration, error) {
-	deliveryRuntime, err := providers.Build(cfg, logger)
-	if err != nil {
-		return nil, 0, err
+func buildMessageHandler(cfg config.Config, logger *slog.Logger, runtime providers.Runtime) (smtprelay.MessageHandler, time.Duration, error) {
+	if runtime.Provider == nil {
+		return nil, 0, fmt.Errorf("delivery runtime provider cannot be nil")
 	}
 
 	senderPolicy, err := buildSenderPolicy(cfg)
@@ -138,8 +173,8 @@ func buildMessageHandler(cfg config.Config, logger *slog.Logger) (smtprelay.Mess
 		return nil, 0, err
 	}
 
-	handlerTimeout := deliveryRuntime.HandlerTimeout
-	return newDirectSendMessageHandler(cfg, logger, senderPolicy, deliveryRuntime.Provider.Send, deliveryRuntime.SendTimeout), handlerTimeout, nil
+	handlerTimeout := runtime.HandlerTimeout
+	return newDirectSendMessageHandler(cfg, logger, senderPolicy, runtime.Provider.Send, runtime.SendTimeout), handlerTimeout, nil
 }
 
 func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
@@ -157,6 +192,50 @@ func buildRelayHandler(cfg config.Config, logger *slog.Logger, store spool.Store
 	}
 
 	return relaysvc.NewHandler(logger, senderPolicy, store, cfg.SMTPMaxInflightSends)
+}
+
+// buildBackgroundDelivery constructs the durable spool store and background worker before SMTP startup.
+func buildBackgroundDelivery(root string, logger *slog.Logger, runtime providers.Runtime) (*spool.SpoolStore, *spool.Worker, error) {
+	if runtime.Provider == nil {
+		return nil, nil, fmt.Errorf("delivery runtime provider cannot be nil")
+	}
+
+	store, err := spool.NewSpoolStore(root)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	worker, err := spool.NewWorker(logger, store, runtime.Provider, runtime.SendTimeout)
+	if err != nil {
+		_ = store.Close()
+		return nil, nil, err
+	}
+
+	return store, worker, nil
+}
+
+type startupRecoverer interface {
+	Recover(context.Context, time.Time) (spool.RecoveryResult, error)
+}
+
+func runStartupRecovery(ctx context.Context, logger *slog.Logger, recoverer startupRecoverer, now time.Time) (spool.RecoveryResult, error) {
+	_ = logger
+	if recoverer == nil {
+		return spool.RecoveryResult{}, fmt.Errorf("startup recoverer cannot be nil")
+	}
+	return recoverer.Recover(ctx, now.UTC())
+}
+
+func logRecoverySummary(logger *slog.Logger, result spool.RecoveryResult) {
+	if logger == nil {
+		return
+	}
+	logger.Info("spool recovery completed",
+		"requeued", len(result.Requeued),
+		"submitted", len(result.Submitted),
+		"dead_lettered", len(result.DeadLettered),
+		"orphaned_payloads", len(result.OrphanedPayloads),
+	)
 }
 
 func newDirectSendMessageHandler(cfg config.Config, logger *slog.Logger, senderPolicy email.SenderPolicy, sendFunc func(context.Context, email.Message) error, sendTimeout time.Duration) smtprelay.MessageHandler {
