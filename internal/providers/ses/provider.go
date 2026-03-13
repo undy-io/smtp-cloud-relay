@@ -271,14 +271,6 @@ func validateEndpoint(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func (p *Provider) Send(ctx context.Context, msg email.Message) error {
-	result, err := p.Submit(ctx, msg, "")
-	if err != nil {
-		return err
-	}
-	return compatibilitySendResult(result)
-}
-
 // Submit treats SES SendEmail acceptance as terminal submission success for the
 // v1 async provider contract.
 func (p *Provider) Submit(ctx context.Context, msg email.Message, _ string) (email.SubmissionResult, error) {
@@ -350,23 +342,6 @@ func classifySendError(err error) *SendError {
 	}
 
 	return temporarySendError(0, err)
-}
-
-func compatibilitySendResult(result email.SubmissionResult) error {
-	switch result.State {
-	case email.SubmissionStateRunning, email.SubmissionStateSucceeded:
-		return nil
-	case email.SubmissionStateFailed, email.SubmissionStateCanceled:
-		if result.Failure != nil {
-			sendErr := permanentSendError(errors.New(result.Failure.Message))
-			sendErr.StatusCode = result.Failure.StatusCode
-			sendErr.Retryable = result.Failure.Temporary
-			return sendErr
-		}
-		return permanentSendError(fmt.Errorf("ses submission ended in %q state", result.State))
-	default:
-		return permanentSendError(fmt.Errorf("unknown ses submission state %q", result.State))
-	}
 }
 
 func buildRawMessage(sender string, msg email.Message) ([]byte, []string, []string, error) {

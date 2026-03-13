@@ -1111,7 +1111,7 @@ Use this format when adding or revising tasks:
   - SMTP enqueue, bootstrap, and request-path cutover are owned by `SPOOL-002C` through `SPOOL-002F`; temporary compatibility cleanup is owned by `SPOOL-003A`
 
 ### SPOOL-003A — Remove Temporary Provider.Send Compatibility
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-002E
@@ -1144,7 +1144,7 @@ Use this format when adding or revising tasks:
   - this task does not reintroduce provider submission onto the SMTP request path
 - Implementation Notes:
   - This is cleanup of the transitional compatibility introduced in `SPOOL-003`.
-  - Execute it only after `SPOOL-002E` has removed the direct-send SMTP path.
+  - Executed after `SPOOL-002E` removed the direct-send SMTP path.
 - Later In:
   - enqueue-boundary proof in `SPOOL-002F`
   - worker and provider runtime behavior in `SPOOL-005`

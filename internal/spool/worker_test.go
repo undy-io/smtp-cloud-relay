@@ -813,7 +813,6 @@ func (s *stubWorkerStore) Recover(ctx context.Context, now time.Time) (RecoveryR
 }
 
 type stubWorkerProvider struct {
-	sendFn   func(context.Context, email.Message) error
 	submitFn func(context.Context, email.Message, string) (email.SubmissionResult, error)
 	pollFn   func(context.Context, string) (email.SubmissionStatus, error)
 }
@@ -827,13 +826,6 @@ func (e stubDeliveryError) Error() string        { return "delivery failure" }
 func (e stubDeliveryError) ProviderName() string { return "stub" }
 func (e stubDeliveryError) Temporary() bool      { return e.temporary }
 func (e stubDeliveryError) HTTPStatusCode() int  { return e.statusCode }
-
-func (p stubWorkerProvider) Send(ctx context.Context, msg email.Message) error {
-	if p.sendFn != nil {
-		return p.sendFn(ctx, msg)
-	}
-	return nil
-}
 
 func (p stubWorkerProvider) Submit(ctx context.Context, msg email.Message, operationID string) (email.SubmissionResult, error) {
 	if p.submitFn != nil {

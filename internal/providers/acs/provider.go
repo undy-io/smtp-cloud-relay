@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -305,14 +304,6 @@ func NewProvider(endpoint, connectionString, sender string, logger *slog.Logger,
 	}
 
 	return provider, nil
-}
-
-func (p *Provider) Send(ctx context.Context, msg email.Message) error {
-	result, err := p.Submit(ctx, msg, "")
-	if err != nil {
-		return err
-	}
-	return compatibilitySendResult(result)
 }
 
 func (p *Provider) Submit(ctx context.Context, msg email.Message, operationID string) (email.SubmissionResult, error) {
@@ -781,26 +772,6 @@ func parseRetryAfter(raw string) time.Duration {
 		return 0
 	}
 	return delay
-}
-
-func compatibilitySendResult(result email.SubmissionResult) error {
-	switch result.State {
-	case email.SubmissionStateRunning, email.SubmissionStateSucceeded:
-		return nil
-	case email.SubmissionStateFailed, email.SubmissionStateCanceled:
-		if result.Failure != nil {
-			err := errors.New(result.Failure.Message)
-			if result.Failure.Temporary {
-				return temporarySendError("", 1, 1, result.Failure.StatusCode, err)
-			}
-			sendErr := permanentSendError("", 1, 1, err)
-			sendErr.StatusCode = result.Failure.StatusCode
-			return sendErr
-		}
-		return permanentSendError("", 1, 1, fmt.Errorf("acs submission ended in %q state", result.State))
-	default:
-		return permanentSendError("", 1, 1, fmt.Errorf("unknown acs submission state %q", result.State))
-	}
 }
 
 func appendExtraCAPEM(p *Provider, pemBytes []byte) error {

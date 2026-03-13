@@ -170,7 +170,7 @@ func TestNewProviderValidHTTPSCustomEndpoint(t *testing.T) {
 	}
 }
 
-func TestSendMapsPayload(t *testing.T) {
+func TestSubmitMapsPayload(t *testing.T) {
 	client := &stubSendEmailClient{
 		out: &sesv2.SendEmailOutput{MessageId: aws.String("msg-123")},
 	}
@@ -193,8 +193,8 @@ func TestSendMapsPayload(t *testing.T) {
 		},
 	}
 
-	if err := p.Send(context.Background(), msg); err != nil {
-		t.Fatalf("Send() error = %v", err)
+	if _, err := p.Submit(context.Background(), msg, ""); err != nil {
+		t.Fatalf("Submit() error = %v", err)
 	}
 
 	if client.input == nil {
@@ -319,7 +319,7 @@ func TestPollReturnsSucceeded(t *testing.T) {
 	}
 }
 
-func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
+func TestSubmitDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 	client := &stubSendEmailClient{
 		out: &sesv2.SendEmailOutput{MessageId: aws.String("msg-123")},
 	}
@@ -336,8 +336,8 @@ func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 		TextBody:   "Text body",
 	}
 
-	if err := p.Send(context.Background(), msg); err != nil {
-		t.Fatalf("Send() error = %v", err)
+	if _, err := p.Submit(context.Background(), msg, ""); err != nil {
+		t.Fatalf("Submit() error = %v", err)
 	}
 	if got := client.input.ReplyToAddresses; len(got) != 0 {
 		t.Fatalf("expected no reply-to addresses, got %#v", got)
@@ -358,14 +358,14 @@ func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 	}
 }
 
-func TestSendInvalidMessageReturnsTypedError(t *testing.T) {
+func TestSubmitInvalidMessageReturnsTypedError(t *testing.T) {
 	client := &stubSendEmailClient{}
 	p, err := NewProvider("us-gov-west-1", "no-reply@example.com", "", "", testLogger(), WithClient(client))
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
-	err = p.Send(context.Background(), email.Message{})
+	_, err = p.Submit(context.Background(), email.Message{}, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

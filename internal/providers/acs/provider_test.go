@@ -139,10 +139,10 @@ func TestNewProviderInvalid(t *testing.T) {
 	}
 }
 
-func TestSendInvalidMessageReturnsTypedError(t *testing.T) {
+func TestSubmitInvalidMessageReturnsTypedError(t *testing.T) {
 	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
 
-	err := p.Send(context.Background(), email.Message{})
+	_, err := p.Submit(context.Background(), email.Message{}, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -162,7 +162,7 @@ func TestSendInvalidMessageReturnsTypedError(t *testing.T) {
 	}
 }
 
-func TestSendMapsPayload(t *testing.T) {
+func TestSubmitMapsPayload(t *testing.T) {
 	var captured sendRequest
 	var method, path, apiVersion, requestID string
 
@@ -210,8 +210,8 @@ func TestSendMapsPayload(t *testing.T) {
 		},
 	}
 
-	if err := p.Send(context.Background(), msg); err != nil {
-		t.Fatalf("Send() error = %v", err)
+	if _, err := p.Submit(context.Background(), msg, ""); err != nil {
+		t.Fatalf("Submit() error = %v", err)
 	}
 
 	if method != http.MethodPost {
@@ -536,7 +536,7 @@ func TestPollRejectsEmptyOperationID(t *testing.T) {
 	}
 }
 
-func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
+func TestSubmitDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 	var captured sendRequest
 
 	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(1, time.Millisecond))
@@ -560,8 +560,8 @@ func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 		TextBody:   "Text body",
 	}
 
-	if err := p.Send(context.Background(), msg); err != nil {
-		t.Fatalf("Send() error = %v", err)
+	if _, err := p.Submit(context.Background(), msg, ""); err != nil {
+		t.Fatalf("Submit() error = %v", err)
 	}
 	if len(captured.ReplyTo) != 0 {
 		t.Fatalf("expected no replyTo, got %#v", captured.ReplyTo)
@@ -574,7 +574,7 @@ func TestSendDoesNotInferReplyToFromHeaderFrom(t *testing.T) {
 	}
 }
 
-func TestSendContentVariants(t *testing.T) {
+func TestSubmitContentVariants(t *testing.T) {
 	tests := []struct {
 		name      string
 		msg       email.Message
@@ -618,8 +618,8 @@ func TestSendContentVariants(t *testing.T) {
 				}),
 			}
 
-			if err := p.Send(context.Background(), tc.msg); err != nil {
-				t.Fatalf("Send() error = %v", err)
+			if _, err := p.Submit(context.Background(), tc.msg, ""); err != nil {
+				t.Fatalf("Submit() error = %v", err)
 			}
 
 			if captured.Content.PlainText != tc.wantPlain {
@@ -632,7 +632,7 @@ func TestSendContentVariants(t *testing.T) {
 	}
 }
 
-func TestSendRetriesOn500(t *testing.T) {
+func TestSubmitRetriesOn500(t *testing.T) {
 	callCount := 0
 	requestIDs := make([]string, 0, 3)
 
@@ -648,9 +648,9 @@ func TestSendRetriesOn500(t *testing.T) {
 		}),
 	}
 
-	err := p.Send(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "retry"})
+	_, err := p.Submit(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "retry"}, "")
 	if err != nil {
-		t.Fatalf("Send() error = %v", err)
+		t.Fatalf("Submit() error = %v", err)
 	}
 
 	if callCount != 3 {
@@ -667,7 +667,7 @@ func TestSendRetriesOn500(t *testing.T) {
 	}
 }
 
-func TestSendRetriesOn429(t *testing.T) {
+func TestSubmitRetriesOn429(t *testing.T) {
 	callCount := 0
 
 	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(3, time.Millisecond))
@@ -681,9 +681,9 @@ func TestSendRetriesOn429(t *testing.T) {
 		}),
 	}
 
-	err := p.Send(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "retry429"})
+	_, err := p.Submit(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "retry429"}, "")
 	if err != nil {
-		t.Fatalf("Send() error = %v", err)
+		t.Fatalf("Submit() error = %v", err)
 	}
 
 	if callCount != 2 {
@@ -691,7 +691,7 @@ func TestSendRetriesOn429(t *testing.T) {
 	}
 }
 
-func TestSendDoesNotRetryOn400AndReturnsTypedError(t *testing.T) {
+func TestSubmitDoesNotRetryOn400AndReturnsTypedError(t *testing.T) {
 	callCount := 0
 
 	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(5, time.Millisecond))
@@ -702,7 +702,7 @@ func TestSendDoesNotRetryOn400AndReturnsTypedError(t *testing.T) {
 		}),
 	}
 
-	err := p.Send(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "noretry"})
+	_, err := p.Submit(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "noretry"}, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -744,7 +744,7 @@ func TestSendDoesNotRetryOn400AndReturnsTypedError(t *testing.T) {
 	}
 }
 
-func TestSendRetriesTransportErrors(t *testing.T) {
+func TestSubmitRetriesTransportErrors(t *testing.T) {
 	p := newProviderForEndpoint(t, "https://example.communication.azure.us", WithRetry(3, time.Millisecond))
 
 	callCount := 0
@@ -758,9 +758,9 @@ func TestSendRetriesTransportErrors(t *testing.T) {
 		}),
 	}
 
-	err := p.Send(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "transport retry"})
+	_, err := p.Submit(context.Background(), email.Message{To: []string{"to@example.com"}, Subject: "transport retry"}, "")
 	if err != nil {
-		t.Fatalf("Send() error = %v", err)
+		t.Fatalf("Submit() error = %v", err)
 	}
 
 	if callCount != 3 {

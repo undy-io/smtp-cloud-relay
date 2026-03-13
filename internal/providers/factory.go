@@ -18,9 +18,8 @@ const maxDuration = time.Duration(1<<63 - 1)
 
 // Runtime bundles the selected provider with runtime timeout budgets.
 type Runtime struct {
-	Provider       email.Provider
-	SendTimeout    time.Duration
-	HandlerTimeout time.Duration
+	Provider    email.Provider
+	SendTimeout time.Duration
 }
 
 // Build selects and configures the outbound provider for the configured delivery mode.
@@ -37,7 +36,7 @@ func Build(cfg config.Config, logger *slog.Logger) (Runtime, error) {
 	case "acs":
 		baseDelay := time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond
 		httpTimeout := time.Duration(cfg.DeliveryHTTPTimeoutMS) * time.Millisecond
-		sendTimeout, handlerTimeout := runtimeBudgets(httpTimeout, baseDelay, cfg.DeliveryRetryAttempts)
+		sendTimeout := runtimeSendTimeout(httpTimeout, baseDelay, cfg.DeliveryRetryAttempts)
 
 		client, err := httpclient.Build(httpclient.Config{
 			Timeout:             httpTimeout,
@@ -62,14 +61,13 @@ func Build(cfg config.Config, logger *slog.Logger) (Runtime, error) {
 		}
 
 		return Runtime{
-			Provider:       p,
-			SendTimeout:    sendTimeout,
-			HandlerTimeout: handlerTimeout,
+			Provider:    p,
+			SendTimeout: sendTimeout,
 		}, nil
 	case "ses":
 		baseDelay := time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond
 		httpTimeout := time.Duration(cfg.DeliveryHTTPTimeoutMS) * time.Millisecond
-		sendTimeout, handlerTimeout := runtimeBudgets(httpTimeout, baseDelay, cfg.DeliveryRetryAttempts)
+		sendTimeout := runtimeSendTimeout(httpTimeout, baseDelay, cfg.DeliveryRetryAttempts)
 
 		client, err := httpclient.Build(httpclient.Config{
 			Timeout:             httpTimeout,
@@ -97,21 +95,18 @@ func Build(cfg config.Config, logger *slog.Logger) (Runtime, error) {
 		}
 
 		return Runtime{
-			Provider:       p,
-			SendTimeout:    sendTimeout,
-			HandlerTimeout: handlerTimeout,
+			Provider:    p,
+			SendTimeout: sendTimeout,
 		}, nil
 	default:
 		return Runtime{}, fmt.Errorf("unsupported delivery mode %q", cfg.DeliveryMode)
 	}
 }
 
-func runtimeBudgets(httpTimeout, baseDelay time.Duration, attempts int) (time.Duration, time.Duration) {
+func runtimeSendTimeout(httpTimeout, baseDelay time.Duration, attempts int) time.Duration {
 	retryTransportBudget := multiplyDuration(httpTimeout, attempts)
 	retryBackoffBudget := retryBackoffTotal(baseDelay, attempts)
-	sendTimeout := saturatingAdd(retryTransportBudget, retryBackoffBudget, 2*time.Second)
-	handlerTimeout := saturatingAdd(sendTimeout, 5*time.Second)
-	return sendTimeout, handlerTimeout
+	return saturatingAdd(retryTransportBudget, retryBackoffBudget, 2*time.Second)
 }
 
 func retryBackoffTotal(base time.Duration, attempts int) time.Duration {

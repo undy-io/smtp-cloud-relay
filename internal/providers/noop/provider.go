@@ -21,11 +21,6 @@ func NewProvider(logger *slog.Logger) *Provider {
 	return &Provider{logger: logger}
 }
 
-func (p *Provider) Send(ctx context.Context, msg email.Message) error {
-	_, err := p.Submit(ctx, msg, "")
-	return err
-}
-
 func (p *Provider) Submit(_ context.Context, msg email.Message, operationID string) (email.SubmissionResult, error) {
 	p.logger.Info("noop delivery accepted",
 		"envelope_from", msg.EnvelopeFrom,

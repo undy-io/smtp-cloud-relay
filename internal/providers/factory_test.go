@@ -28,12 +28,6 @@ func TestBuildNoop(t *testing.T) {
 	if rt.SendTimeout != 0 {
 		t.Fatalf("unexpected send timeout: %s", rt.SendTimeout)
 	}
-	if rt.HandlerTimeout != 0 {
-		t.Fatalf("unexpected handler timeout: %s", rt.HandlerTimeout)
-	}
-	if err := rt.Provider.Send(context.Background(), email.Message{To: []string{"to@example.com"}}); err != nil {
-		t.Fatalf("Send() error: %v", err)
-	}
 	result, err := rt.Provider.Submit(context.Background(), email.Message{To: []string{"to@example.com"}}, "noop-op")
 	if err != nil {
 		t.Fatalf("Submit() error: %v", err)
@@ -75,9 +69,6 @@ func TestBuildACS(t *testing.T) {
 	if rt.SendTimeout <= 0 {
 		t.Fatalf("expected send timeout > 0, got %s", rt.SendTimeout)
 	}
-	if rt.HandlerTimeout <= rt.SendTimeout {
-		t.Fatalf("expected handler timeout > send timeout, got send=%s handler=%s", rt.SendTimeout, rt.HandlerTimeout)
-	}
 }
 
 func TestBuildSES(t *testing.T) {
@@ -108,9 +99,6 @@ func TestBuildSES(t *testing.T) {
 	}
 	if rt.SendTimeout <= 0 {
 		t.Fatalf("expected send timeout > 0, got %s", rt.SendTimeout)
-	}
-	if rt.HandlerTimeout <= rt.SendTimeout {
-		t.Fatalf("expected handler timeout > send timeout, got send=%s handler=%s", rt.SendTimeout, rt.HandlerTimeout)
 	}
 }
 
