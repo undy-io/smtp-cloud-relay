@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 )
 
 func TestNewWorkerRejectsNilStore(t *testing.T) {
@@ -87,6 +89,41 @@ func TestWorkerProcessQueuedOnceImmediateSuccess(t *testing.T) {
 	}
 	if store.markSucceededCalls != 1 {
 		t.Fatalf("unexpected MarkSucceeded call count: %d", store.markSucceededCalls)
+	}
+}
+
+func TestWorkerProcessQueuedOnceImmediateSuccessIncrementsSubmissionMetric(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+	rec := Record{ID: testRecordID(0x701), State: StateWorking, Attempt: 0, Message: email.Message{To: []string{"to@example.com"}}}
+	metrics := observability.NewMetrics(nil)
+	store := &stubWorkerStore{
+		claimReadyFn: func(context.Context, time.Time) (Record, bool, error) { return rec, true, nil },
+		markSucceededFn: func(_ context.Context, got Record) (Record, error) { return got, nil },
+	}
+	provider := stubWorkerProvider{
+		submitFn: func(context.Context, email.Message, string) (email.SubmissionResult, error) {
+			return email.SubmissionResult{State: email.SubmissionStateSucceeded}, nil
+		},
+	}
+
+	cfg := testWorkerConfig()
+	cfg.ProviderName = "acs"
+	cfg.Metrics = metrics
+	worker, err := NewWorker(testWorkerLogger(), store, provider, cfg)
+	if err != nil {
+		t.Fatalf("NewWorker() error: %v", err)
+	}
+	worker.now = func() time.Time { return now }
+
+	if _, err := worker.processQueuedOnce(context.Background(), now); err != nil {
+		t.Fatalf("processQueuedOnce() error: %v", err)
+	}
+
+	body := scrapeWorkerMetrics(t, metrics)
+	if !strings.Contains(body, `smtp_relay_delivery_submissions_total{outcome="succeeded",provider="acs"} 1`) {
+		t.Fatalf("expected submission metric, got:\n%s", body)
 	}
 }
 
@@ -277,6 +314,46 @@ func TestWorkerProcessQueuedOnceTemporarySubmitErrorRequeues(t *testing.T) {
 	}
 }
 
+func TestWorkerProcessQueuedOnceTemporarySubmitErrorIncrementsRetryMetric(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+	rec := Record{ID: testRecordID(0x702), State: StateWorking, Attempt: 0, Message: email.Message{To: []string{"to@example.com"}}}
+	metrics := observability.NewMetrics(nil)
+	store := &stubWorkerStore{
+		claimReadyFn: func(context.Context, time.Time) (Record, bool, error) { return rec, true, nil },
+		markRetryFn: func(_ context.Context, got Record, next time.Time, lastErr *LastError) (Record, error) {
+			return got, nil
+		},
+	}
+	provider := stubWorkerProvider{
+		submitFn: func(context.Context, email.Message, string) (email.SubmissionResult, error) {
+			return email.SubmissionResult{}, stubDeliveryError{temporary: true}
+		},
+	}
+
+	cfg := testWorkerConfig()
+	cfg.ProviderName = "ses"
+	cfg.Metrics = metrics
+	worker, err := NewWorker(testWorkerLogger(), store, provider, cfg)
+	if err != nil {
+		t.Fatalf("NewWorker() error: %v", err)
+	}
+	worker.now = func() time.Time { return now }
+
+	if _, err := worker.processQueuedOnce(context.Background(), now); err != nil {
+		t.Fatalf("processQueuedOnce() error: %v", err)
+	}
+
+	body := scrapeWorkerMetrics(t, metrics)
+	if !strings.Contains(body, `smtp_relay_delivery_retries_total{stage="submit"} 1`) {
+		t.Fatalf("expected submit retry metric, got:\n%s", body)
+	}
+	if !strings.Contains(body, `smtp_relay_delivery_submissions_total{outcome="temporary_error",provider="ses"} 1`) {
+		t.Fatalf("expected temporary submission metric, got:\n%s", body)
+	}
+}
+
 func TestWorkerProcessQueuedOncePermanentSubmitErrorDeadLetters(t *testing.T) {
 	t.Parallel()
 
@@ -353,6 +430,46 @@ func TestWorkerProcessSubmittedOnceRunningReschedulesWithoutIncrementingAttempt(
 	}
 }
 
+func TestWorkerProcessSubmittedOnceRunningIncrementsPollRetryMetric(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+	rec := Record{ID: testRecordID(0x703), State: StateSubmitted, Attempt: 1, OperationID: "op-703", FirstSubmittedAt: now.Add(-time.Hour)}
+	metrics := observability.NewMetrics(nil)
+	store := &stubWorkerStore{
+		nextSubmittedReadyFn: func(context.Context, time.Time) (Record, bool, error) { return rec, true, nil },
+		markRetryFn: func(_ context.Context, got Record, next time.Time, lastErr *LastError) (Record, error) {
+			return got, nil
+		},
+	}
+	provider := stubWorkerProvider{
+		pollFn: func(context.Context, string) (email.SubmissionStatus, error) {
+			return email.SubmissionStatus{State: email.SubmissionStateRunning}, nil
+		},
+	}
+
+	cfg := testWorkerConfig()
+	cfg.ProviderName = "acs"
+	cfg.Metrics = metrics
+	worker, err := NewWorker(testWorkerLogger(), store, provider, cfg)
+	if err != nil {
+		t.Fatalf("NewWorker() error: %v", err)
+	}
+	worker.now = func() time.Time { return now }
+
+	if _, err := worker.processSubmittedOnce(context.Background(), now); err != nil {
+		t.Fatalf("processSubmittedOnce() error: %v", err)
+	}
+
+	body := scrapeWorkerMetrics(t, metrics)
+	if !strings.Contains(body, `smtp_relay_delivery_retries_total{stage="poll"} 1`) {
+		t.Fatalf("expected poll retry metric, got:\n%s", body)
+	}
+	if !strings.Contains(body, `smtp_relay_delivery_polls_total{outcome="running",provider="acs"} 1`) {
+		t.Fatalf("expected running poll metric, got:\n%s", body)
+	}
+}
+
 func TestWorkerProcessSubmittedOnceSuccessMarksSucceeded(t *testing.T) {
 	t.Parallel()
 
@@ -381,6 +498,41 @@ func TestWorkerProcessSubmittedOnceSuccessMarksSucceeded(t *testing.T) {
 	}
 	if !worked {
 		t.Fatal("expected work to be performed")
+	}
+}
+
+func TestWorkerProcessSubmittedOnceSuccessIncrementsPollMetric(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+	rec := Record{ID: testRecordID(0x704), State: StateSubmitted, Attempt: 1, OperationID: "op-704", FirstSubmittedAt: now.Add(-time.Hour)}
+	metrics := observability.NewMetrics(nil)
+	store := &stubWorkerStore{
+		nextSubmittedReadyFn: func(context.Context, time.Time) (Record, bool, error) { return rec, true, nil },
+		markSucceededFn: func(_ context.Context, got Record) (Record, error) { return got, nil },
+	}
+	provider := stubWorkerProvider{
+		pollFn: func(context.Context, string) (email.SubmissionStatus, error) {
+			return email.SubmissionStatus{State: email.SubmissionStateSucceeded}, nil
+		},
+	}
+
+	cfg := testWorkerConfig()
+	cfg.ProviderName = "ses"
+	cfg.Metrics = metrics
+	worker, err := NewWorker(testWorkerLogger(), store, provider, cfg)
+	if err != nil {
+		t.Fatalf("NewWorker() error: %v", err)
+	}
+	worker.now = func() time.Time { return now }
+
+	if _, err := worker.processSubmittedOnce(context.Background(), now); err != nil {
+		t.Fatalf("processSubmittedOnce() error: %v", err)
+	}
+
+	body := scrapeWorkerMetrics(t, metrics)
+	if !strings.Contains(body, `smtp_relay_delivery_polls_total{outcome="succeeded",provider="ses"} 1`) {
+		t.Fatalf("expected succeeded poll metric, got:\n%s", body)
 	}
 }
 
@@ -730,7 +882,18 @@ func testWorkerConfig() WorkerConfig {
 		RetryAttempts:    3,
 		RetryBaseDelay:   time.Second,
 		SubmittedTimeout: DefaultSubmittedTimeout,
+		ProviderName:     "test-provider",
+		Metrics:          nil,
 	}
+}
+
+func scrapeWorkerMetrics(t *testing.T, metrics *observability.Metrics) string {
+	t.Helper()
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, req)
+	return rec.Body.String()
 }
 
 func testWorkerLogger() *slog.Logger {

@@ -1414,7 +1414,7 @@ Use this format when adding or revising tasks:
 ## Observability
 
 ### OBS-001 — Replace Placeholder Metrics With Real Prometheus Metrics
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On: SPOOL-005B
 - Goal: make `/metrics` operational.
@@ -1456,7 +1456,7 @@ Use this format when adding or revising tasks:
   - Do not put high-cardinality labels on recipient or sender addresses.
 
 ### OBS-002 — Tie Readiness To Spool Recovery
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On:
   - SPOOL-005A

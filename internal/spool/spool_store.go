@@ -58,6 +58,11 @@ func (s *SpoolStore) Close() error {
 	return s.records.close()
 }
 
+// StateCounts returns the current durable spool record counts by state.
+func (s *SpoolStore) StateCounts(ctx context.Context) (map[string]int, error) {
+	return s.records.stateCounts(ctx)
+}
+
 func (s *SpoolStore) Enqueue(ctx context.Context, msg email.Message) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err

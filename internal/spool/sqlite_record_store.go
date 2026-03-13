@@ -189,6 +189,36 @@ func (s *sqliteRecordStore) nextSubmittedReady(ctx context.Context, now time.Tim
 	return meta.toRecord(), true, nil
 }
 
+func (s *sqliteRecordStore) stateCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT state, COUNT(*)
+		FROM records
+		GROUP BY state`)
+	if err != nil {
+		return nil, wrapStoreError("query spool state counts", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var (
+			state string
+			count int
+		)
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, wrapStoreError("scan spool state counts", err)
+		}
+		if !isValidState(State(state)) {
+			return nil, wrapStoreError("validate spool state counts", fmt.Errorf("invalid spool state %q in counts query", state))
+		}
+		counts[state] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStoreError("iterate spool state counts", err)
+	}
+	return counts, nil
+}
+
 func (s *sqliteRecordStore) markSubmitted(ctx context.Context, rec Record, result email.SubmissionResult, nextAttemptAt time.Time) (Record, error) {
 	if rec.State != StateWorking {
 		return Record{}, fmt.Errorf("mark submitted requires %q state, got %q", StateWorking, rec.State)

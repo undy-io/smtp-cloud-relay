@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/http/httptest"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/undy-io/smtp-cloud-relay/internal/config"
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 	"github.com/undy-io/smtp-cloud-relay/internal/providers"
 	smtprelay "github.com/undy-io/smtp-cloud-relay/internal/smtp"
 	"github.com/undy-io/smtp-cloud-relay/internal/spool"
@@ -34,7 +36,7 @@ func TestBuildMessageHandlerRejectsInvalidSenderPolicyRegex(t *testing.T) {
 		SenderAllowedDomains: []string{"re:("},
 	}
 
-	_, _, err := buildMessageHandler(handlerCfg, testMainLogger(), &stubRelayStore{})
+	_, _, err := buildMessageHandler(handlerCfg, testMainLogger(), &stubRelayStore{}, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -50,7 +52,7 @@ func TestBuildMessageHandlerRejectsInvalidSenderPolicyGlob(t *testing.T) {
 		SenderAllowedDomains: []string{"glob:*.*.example.com"},
 	}
 
-	_, _, err := buildMessageHandler(handlerCfg, testMainLogger(), &stubRelayStore{})
+	_, _, err := buildMessageHandler(handlerCfg, testMainLogger(), &stubRelayStore{}, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -63,7 +65,7 @@ func TestBuildMessageHandlerUsesSpoolStore(t *testing.T) {
 		DeliveryMode:         "noop",
 		SMTPMaxInflightSends: 1,
 		SenderPolicyMode:     "rewrite",
-	}, testMainLogger(), &stubRelayStore{})
+	}, testMainLogger(), &stubRelayStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -83,7 +85,7 @@ func TestBuildMessageHandlerMapsSenderPolicyError(t *testing.T) {
 		SMTPMaxInflightSends: 1,
 		SenderPolicyMode:     "strict",
 		SenderAllowedDomains: []string{"allowed.example.com"},
-	}, testMainLogger(), &stubRelayStore{})
+	}, testMainLogger(), &stubRelayStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestBuildMessageHandlerMapsBusyError(t *testing.T) {
 			<-block
 			return spool.Record{ID: "test-record", Message: msg}, nil
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -158,7 +160,7 @@ func TestBuildMessageHandlerMapsStoreError(t *testing.T) {
 		enqueueFunc: func(context.Context, email.Message) (spool.Record, error) {
 			return spool.Record{}, &spool.StoreError{Op: "enqueue", Err: errors.New("disk full")}
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -181,7 +183,7 @@ func TestBuildMessageHandlerMapsUnexpectedEnqueueError(t *testing.T) {
 		enqueueFunc: func(context.Context, email.Message) (spool.Record, error) {
 			return spool.Record{}, errors.New("boom")
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -208,7 +210,7 @@ func TestBuildMessageHandlerEnqueueAdapterReturnsStoreErrorOnWire(t *testing.T) 
 			handlerDeadlineCh <- hasDeadline
 			return spool.Record{}, &spool.StoreError{Op: "enqueue", Err: errors.New("disk full")}
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -277,7 +279,7 @@ func TestBuildMessageHandlerDoesNotAckBeforeEnqueueCommit(t *testing.T) {
 			<-release
 			return spool.Record{ID: "queued-record", Message: msg}, nil
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -369,7 +371,7 @@ func TestBuildMessageHandlerMapsCanceledEnqueueToTemporaryFailure(t *testing.T) 
 			<-ctx.Done()
 			return spool.Record{}, ctx.Err()
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("buildMessageHandler() error: %v", err)
 	}
@@ -390,12 +392,40 @@ func TestBuildRelayHandlerConstructsHandlerWithoutProviders(t *testing.T) {
 		DeliveryMode:         "does-not-matter-here",
 		SMTPMaxInflightSends: 2,
 		SenderPolicyMode:     "rewrite",
-	}, testMainLogger(), &stubRelayStore{})
+	}, testMainLogger(), &stubRelayStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildRelayHandler() error: %v", err)
 	}
 	if handler == nil {
 		t.Fatal("expected handler, got nil")
+	}
+}
+
+func TestBuildMetricsUsesSpoolStoreStateCounts(t *testing.T) {
+	t.Parallel()
+
+	store, err := spool.NewSpoolStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSpoolStore() error: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+	}()
+
+	if _, err := store.Enqueue(context.Background(), email.Message{
+		EnvelopeFrom: "from@example.com",
+		To:           []string{"to@example.com"},
+		TextBody:     "queued",
+	}); err != nil {
+		t.Fatalf("Enqueue() error: %v", err)
+	}
+
+	metrics := buildMetrics(store)
+	body := scrapeMetricsText(t, metrics)
+	if !strings.Contains(body, `smtp_relay_spool_records{state="queued"} 1`) {
+		t.Fatalf("expected queued spool metric, got:\n%s", body)
 	}
 }
 
@@ -440,10 +470,40 @@ func TestMainWorkerConfigUsesConfigSpoolPollInterval(t *testing.T) {
 		RetryAttempts:    cfg.DeliveryRetryAttempts,
 		RetryBaseDelay:   time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond,
 		SubmittedTimeout: spool.DefaultSubmittedTimeout,
+		ProviderName:     cfg.DeliveryMode,
 	}
 
 	if workerCfg.PollInterval != 2500*time.Millisecond {
 		t.Fatalf("unexpected worker PollInterval: %s", workerCfg.PollInterval)
+	}
+	if workerCfg.ProviderName != "" {
+		t.Fatalf("unexpected zero ProviderName: %q", workerCfg.ProviderName)
+	}
+}
+
+func TestMainWorkerConfigUsesDeliveryModeAsProviderName(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		DeliveryMode:              "ses",
+		DeliveryRetryAttempts:    3,
+		DeliveryRetryBaseDelayMS: 1000,
+		SpoolPollIntervalMS:      1000,
+	}
+	runtime := testRuntime()
+
+	workerCfg := spool.WorkerConfig{
+		SubmitTimeout:    runtime.SendTimeout,
+		FinalizeTimeout:  spool.DefaultFinalizeTimeout,
+		PollInterval:     time.Duration(cfg.SpoolPollIntervalMS) * time.Millisecond,
+		RetryAttempts:    cfg.DeliveryRetryAttempts,
+		RetryBaseDelay:   time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond,
+		SubmittedTimeout: spool.DefaultSubmittedTimeout,
+		ProviderName:     cfg.DeliveryMode,
+	}
+
+	if workerCfg.ProviderName != "ses" {
+		t.Fatalf("unexpected ProviderName: %q", workerCfg.ProviderName)
 	}
 }
 
@@ -454,6 +514,31 @@ func TestRunStartupRecoverySurfacesFailure(t *testing.T) {
 	_, err := runStartupRecovery(context.Background(), testMainLogger(), stubRecoverer{err: wantErr}, time.Now().UTC())
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("unexpected error: got %v want %v", err, wantErr)
+	}
+}
+
+func TestProcessReadinessRequiresSMTPAndRecovery(t *testing.T) {
+	t.Parallel()
+
+	var readiness processReadiness
+	if readiness.Ready() {
+		t.Fatal("expected readiness to start false")
+	}
+
+	readiness.setRecoveryReady(true)
+	if readiness.Ready() {
+		t.Fatal("expected readiness false until smtp is ready")
+	}
+
+	readiness.setRecoveryReady(false)
+	readiness.setSMTPReady(true)
+	if readiness.Ready() {
+		t.Fatal("expected readiness false until recovery is ready")
+	}
+
+	readiness.setRecoveryReady(true)
+	if !readiness.Ready() {
+		t.Fatal("expected readiness true when both conditions are ready")
 	}
 }
 
@@ -476,7 +561,17 @@ func testWorkerConfig() spool.WorkerConfig {
 		RetryAttempts:    3,
 		RetryBaseDelay:   time.Second,
 		SubmittedTimeout: spool.DefaultSubmittedTimeout,
+		ProviderName:     "noop",
 	}
+}
+
+func scrapeMetricsText(t *testing.T, metrics *observability.Metrics) string {
+	t.Helper()
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, req)
+	return rec.Body.String()
 }
 
 func assertSMTPError(t *testing.T, err error, wantCode int, wantEnhanced gosmtp.EnhancedCode) {

@@ -5,12 +5,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 	"github.com/undy-io/smtp-cloud-relay/internal/spool"
 )
 
@@ -77,7 +80,7 @@ func TestNewHandlerRejectsInvalidMaxInflight(t *testing.T) {
 	t.Parallel()
 
 	policy := mustTestSenderPolicy(t, email.SenderPolicyOptions{Mode: email.SenderPolicyRewrite})
-	_, err := NewHandler(testLogger(), "rewrite", policy, &stubStore{}, 0)
+	_, err := NewHandler(testLogger(), "rewrite", policy, &stubStore{}, 0, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -226,6 +229,117 @@ func TestHandlerSuccessfulEnqueueReturnsNil(t *testing.T) {
 	}
 }
 
+func TestHandlerSuccessfulEnqueueIncrementsMetric(t *testing.T) {
+	t.Parallel()
+
+	store := &stubStore{}
+	metrics := observability.NewMetrics(nil)
+	handler := mustNewHandlerWithMetrics(t, email.SenderPolicyOptions{Mode: email.SenderPolicyRewrite}, store, 1, metrics)
+
+	err := handler.HandleMessage(context.Background(), email.Message{
+		EnvelopeFrom: "from@example.com",
+		To:           []string{"to@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	body := scrapeRelayMetrics(t, metrics)
+	if !strings.Contains(body, "smtp_relay_enqueued_total 1") {
+		t.Fatalf("expected enqueue success metric, got:\n%s", body)
+	}
+	if !strings.Contains(body, "smtp_relay_enqueue_failures_total 0") {
+		t.Fatalf("expected zero enqueue failures, got:\n%s", body)
+	}
+}
+
+func TestHandlerStoreErrorIncrementsEnqueueFailureMetric(t *testing.T) {
+	t.Parallel()
+
+	store := &stubStore{
+		enqueueFunc: func(context.Context, email.Message) (spool.Record, error) {
+			return spool.Record{}, &spool.StoreError{Op: "enqueue", Err: errors.New("disk full")}
+		},
+	}
+	metrics := observability.NewMetrics(nil)
+	handler := mustNewHandlerWithMetrics(t, email.SenderPolicyOptions{Mode: email.SenderPolicyRewrite}, store, 1, metrics)
+
+	err := handler.HandleMessage(context.Background(), email.Message{
+		EnvelopeFrom: "from@example.com",
+		To:           []string{"to@example.com"},
+	})
+	if _, ok := spool.AsStoreError(err); !ok {
+		t.Fatalf("expected StoreError, got %T: %v", err, err)
+	}
+
+	body := scrapeRelayMetrics(t, metrics)
+	if !strings.Contains(body, "smtp_relay_enqueue_failures_total 1") {
+		t.Fatalf("expected enqueue failure metric, got:\n%s", body)
+	}
+}
+
+func TestHandlerBusyAndSenderPolicyRejectionDoNotIncrementEnqueueFailureMetric(t *testing.T) {
+	t.Parallel()
+
+	metrics := observability.NewMetrics(nil)
+
+	store := &stubStore{}
+	strictHandler := mustNewHandlerWithMetrics(t, email.SenderPolicyOptions{
+		Mode:                  email.SenderPolicyStrict,
+		AllowedDomainPatterns: []string{"allowed.example.com"},
+	}, store, 1, metrics)
+	if err := strictHandler.HandleMessage(context.Background(), email.Message{
+		EnvelopeFrom: "from@example.com",
+		HeaderFrom:   "blocked@example.org",
+		To:           []string{"to@example.com"},
+	}); err == nil {
+		t.Fatal("expected sender policy error")
+	}
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	busyStore := &stubStore{
+		enqueueFunc: func(ctx context.Context, msg email.Message) (spool.Record, error) {
+			close(started)
+			<-block
+			return spool.Record{ID: "busy", Message: msg}, nil
+		},
+	}
+	busyHandler := mustNewHandlerWithMetrics(t, email.SenderPolicyOptions{Mode: email.SenderPolicyRewrite}, busyStore, 1, metrics)
+	firstErrCh := make(chan error, 1)
+	go func() {
+		firstErrCh <- busyHandler.HandleMessage(context.Background(), email.Message{
+			EnvelopeFrom: "from@example.com",
+			To:           []string{"to@example.com"},
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for enqueue start")
+	}
+	if _, ok := AsBusyError(busyHandler.HandleMessage(context.Background(), email.Message{
+		EnvelopeFrom: "from@example.com",
+		To:           []string{"to@example.com"},
+	})); !ok {
+		t.Fatal("expected BusyError")
+	}
+	close(block)
+	select {
+	case err := <-firstErrCh:
+		if err != nil {
+			t.Fatalf("unexpected first handler error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first handler")
+	}
+
+	body := scrapeRelayMetrics(t, metrics)
+	if !strings.Contains(body, "smtp_relay_enqueue_failures_total 0") {
+		t.Fatalf("expected enqueue failures to remain zero, got:\n%s", body)
+	}
+}
+
 func TestHandlerDuplicateMessagesAreEnqueuedSeparately(t *testing.T) {
 	t.Parallel()
 
@@ -275,7 +389,18 @@ func mustNewHandler(t *testing.T, opts email.SenderPolicyOptions, store spool.St
 	t.Helper()
 
 	policy := mustTestSenderPolicy(t, opts)
-	handler, err := NewHandler(testLogger(), string(opts.Mode), policy, store, maxInflight)
+	handler, err := NewHandler(testLogger(), string(opts.Mode), policy, store, maxInflight, nil)
+	if err != nil {
+		t.Fatalf("NewHandler() error: %v", err)
+	}
+	return handler
+}
+
+func mustNewHandlerWithMetrics(t *testing.T, opts email.SenderPolicyOptions, store spool.Store, maxInflight int, metrics *observability.Metrics) *Handler {
+	t.Helper()
+
+	policy := mustTestSenderPolicy(t, opts)
+	handler, err := NewHandler(testLogger(), string(opts.Mode), policy, store, maxInflight, metrics)
 	if err != nil {
 		t.Fatalf("NewHandler() error: %v", err)
 	}
@@ -294,4 +419,13 @@ func mustTestSenderPolicy(t *testing.T, opts email.SenderPolicyOptions) email.Se
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func scrapeRelayMetrics(t *testing.T, metrics *observability.Metrics) string {
+	t.Helper()
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, req)
+	return rec.Body.String()
 }

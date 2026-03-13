@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
+	"net/http/httptest"
 	"net/textproto"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	gosmtp "github.com/emersion/go-smtp"
 
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 )
 
 func TestServerReadySignal(t *testing.T) {
@@ -412,6 +414,84 @@ func TestServerReturnsHandlerSMTPErrorOnWire(t *testing.T) {
 	}
 }
 
+func TestServerDeniedConnectionIncrementsMetric(t *testing.T) {
+	addr := freeTCPAddr(t)
+	metrics := observability.NewMetrics(nil)
+	srv, err := NewServer(Config{
+		ListenAddr:   addr,
+		AllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+		RequireAuth:  false,
+		Metrics:      metrics,
+	}, testLogger(), MessageHandlerFunc(func(context.Context, email.Message) error { return nil }), nil)
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	stop := startServer(t, srv)
+	defer stop()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial() error: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _ = io.ReadAll(conn)
+	_ = conn.Close()
+
+	body := scrapeSMTPMetrics(t, metrics)
+	if !strings.Contains(body, "smtp_relay_sessions_denied_total 1") {
+		t.Fatalf("expected denied session metric, got:\n%s", body)
+	}
+}
+
+func TestServerFailedAuthIncrementsMetric(t *testing.T) {
+	addr := freeTCPAddr(t)
+	metrics := observability.NewMetrics(nil)
+	srv, err := NewServer(Config{
+		ListenAddr:   addr,
+		AllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")},
+		RequireAuth:  true,
+		Metrics:      metrics,
+	}, testLogger(), MessageHandlerFunc(func(context.Context, email.Message) error { return nil }), &StaticAuthProvider{
+		Username: "jira",
+		Password: "secret",
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	stop := startServer(t, srv)
+	defer stop()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial() error: %v", err)
+	}
+	defer conn.Close()
+
+	tp := textproto.NewConn(conn)
+	defer tp.Close()
+
+	if _, _, err := tp.ReadResponse(220); err != nil {
+		t.Fatalf("read greeting: %v", err)
+	}
+	tp.PrintfLine("EHLO localhost")
+	if _, _, err := tp.ReadResponse(250); err != nil {
+		t.Fatalf("ehlo response: %v", err)
+	}
+
+	authLine := base64.StdEncoding.EncodeToString([]byte("\x00jira\x00wrong"))
+	tp.PrintfLine("AUTH PLAIN %s", authLine)
+	if _, _, err := tp.ReadResponse(535); err != nil {
+		t.Fatalf("expected auth failure: %v", err)
+	}
+
+	body := scrapeSMTPMetrics(t, metrics)
+	if !strings.Contains(body, "smtp_relay_auth_failures_total 1") {
+		t.Fatalf("expected auth failure metric, got:\n%s", body)
+	}
+}
+
 func startServer(t *testing.T, srv *Server) func() {
 	t.Helper()
 
@@ -531,6 +611,15 @@ func freeTCPAddr(t *testing.T) string {
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func scrapeSMTPMetrics(t *testing.T, metrics *observability.Metrics) string {
+	t.Helper()
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, req)
+	return rec.Body.String()
 }
 
 func testTLSConfig(t *testing.T) *tls.Config {

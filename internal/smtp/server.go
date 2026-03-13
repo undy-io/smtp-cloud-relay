@@ -18,6 +18,7 @@ import (
 	gosmtp "github.com/emersion/go-smtp"
 
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 )
 
 const (
@@ -84,6 +85,7 @@ type Config struct {
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	HandlerTimeout  time.Duration
+	Metrics         *observability.Metrics
 }
 
 type Server struct {
@@ -161,6 +163,7 @@ func NewServer(cfg Config, logger *slog.Logger, handler MessageHandler, authProv
 		handler:        handler,
 		logger:         logger,
 		handlerTimeout: handlerTimeout,
+		metrics:        cfg.Metrics,
 	}
 	backend := &backend{policy: policy, logger: logger}
 
@@ -408,6 +411,7 @@ type sessionPolicy struct {
 	handler        MessageHandler
 	logger         *slog.Logger
 	handlerTimeout time.Duration
+	metrics        *observability.Metrics
 }
 
 type backend struct {
@@ -419,10 +423,12 @@ func (b *backend) NewSession(c *gosmtp.Conn) (gosmtp.Session, error) {
 	remoteIP, remoteAddr, err := remoteAddrIP(c)
 	if err != nil {
 		b.logger.Warn("rejecting smtp connection with invalid remote address", "error", err)
+		b.policy.metrics.IncSessionsDenied()
 		return nil, &gosmtp.SMTPError{Code: 554, EnhancedCode: gosmtp.EnhancedCode{5, 7, 1}, Message: "access denied"}
 	}
 	if !isAddrAllowed(remoteIP, b.policy.allowedCIDRs) {
 		b.logger.Warn("rejecting smtp connection from non-allowlisted address", "remote_addr", remoteAddr)
+		b.policy.metrics.IncSessionsDenied()
 		return nil, &gosmtp.SMTPError{Code: 554, EnhancedCode: gosmtp.EnhancedCode{5, 7, 1}, Message: "access denied"}
 	}
 
@@ -435,6 +441,7 @@ func (b *backend) NewSession(c *gosmtp.Conn) (gosmtp.Session, error) {
 		requireTLS:   b.policy.requireTLS,
 		logger:       b.policy.logger,
 		timeout:      b.policy.handlerTimeout,
+		metrics:      b.policy.metrics,
 	}, nil
 }
 
@@ -450,6 +457,7 @@ type session struct {
 	requireTLS   bool
 	logger       *slog.Logger
 	timeout      time.Duration
+	metrics      *observability.Metrics
 }
 
 func (s *session) AuthMechanisms() []string {
@@ -469,6 +477,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 
 	return sasl.NewPlainServer(func(_ string, username string, password string) error {
 		if err := s.authProvider.AuthPlain(username, password); err != nil {
+			s.metrics.IncAuthFailures()
 			return &gosmtp.SMTPError{Code: 535, EnhancedCode: gosmtp.EnhancedCode{5, 7, 8}, Message: "authentication failed"}
 		}
 		s.authed = true

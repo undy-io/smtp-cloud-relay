@@ -169,6 +169,73 @@ func TestSpoolStoreEnqueueSurvivesReopenBeforeSubmission(t *testing.T) {
 	}
 }
 
+func TestSpoolStoreStateCountsReturnsExactCountsAfterReopen(t *testing.T) {
+	store := newSpoolTestStore(t)
+	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+
+	records := []Record{
+		{
+			ID:            testRecordID(0x201),
+			State:         StateQueued,
+			Attempt:       0,
+			NextAttemptAt: base,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+		{
+			ID:               testRecordID(0x202),
+			State:            StateSubmitted,
+			Attempt:          1,
+			NextAttemptAt:    base,
+			OperationID:      "op-202",
+			ProviderMessageID: "msg-202",
+			FirstSubmittedAt: base,
+			CreatedAt:        base,
+			UpdatedAt:        base,
+		},
+		{
+			ID:            testRecordID(0x203),
+			State:         StateSucceeded,
+			Attempt:       1,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+			NextAttemptAt: base,
+		},
+	}
+	for _, rec := range records {
+		if err := store.records.insertRecord(context.Background(), rec); err != nil {
+			t.Fatalf("insertRecord(%q) error: %v", rec.ID, err)
+		}
+	}
+
+	counts, err := store.StateCounts(context.Background())
+	if err != nil {
+		t.Fatalf("StateCounts() error: %v", err)
+	}
+	if counts[string(StateQueued)] != 1 || counts[string(StateSubmitted)] != 1 || counts[string(StateSucceeded)] != 1 {
+		t.Fatalf("unexpected state counts: %#v", counts)
+	}
+
+	root := store.records.root
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	reopened, err := NewSpoolStore(root)
+	if err != nil {
+		t.Fatalf("NewSpoolStore() reopen error: %v", err)
+	}
+	defer reopened.Close()
+
+	counts, err = reopened.StateCounts(context.Background())
+	if err != nil {
+		t.Fatalf("StateCounts() after reopen error: %v", err)
+	}
+	if counts[string(StateQueued)] != 1 || counts[string(StateSubmitted)] != 1 || counts[string(StateSucceeded)] != 1 {
+		t.Fatalf("unexpected state counts after reopen: %#v", counts)
+	}
+}
+
 func TestSpoolStoreEnqueueCleansPayloadWhenInsertFails(t *testing.T) {
 	store := newSpoolTestStore(t)
 	recordID := testRecordID(1)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 	"github.com/undy-io/smtp-cloud-relay/internal/spool"
 )
 
@@ -17,6 +18,7 @@ type Handler struct {
 	senderPolicy email.SenderPolicy
 	store        spool.Store
 	inflight     chan struct{}
+	metrics      *observability.Metrics
 }
 
 // BusyError reports that the relay cannot accept more in-flight enqueue work.
@@ -44,7 +46,7 @@ func AsBusyError(err error) (*BusyError, bool) {
 }
 
 // NewHandler constructs the relay-owned durable enqueue service.
-func NewHandler(logger *slog.Logger, senderPolicyMode string, senderPolicy email.SenderPolicy, store spool.Store, maxInflight int) (*Handler, error) {
+func NewHandler(logger *slog.Logger, senderPolicyMode string, senderPolicy email.SenderPolicy, store spool.Store, maxInflight int, metrics *observability.Metrics) (*Handler, error) {
 	if store == nil {
 		return nil, fmt.Errorf("spool store is required")
 	}
@@ -61,6 +63,7 @@ func NewHandler(logger *slog.Logger, senderPolicyMode string, senderPolicy email
 		senderPolicy: senderPolicy,
 		store:        store,
 		inflight:     make(chan struct{}, maxInflight),
+		metrics:      metrics,
 	}, nil
 }
 
@@ -114,7 +117,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg email.Message) error {
 	}
 
 	if _, err := h.store.Enqueue(ctx, msg); err != nil {
+		if _, ok := spool.AsStoreError(err); ok {
+			h.metrics.IncEnqueueFailures()
+		}
 		return err
 	}
+	h.metrics.IncEnqueued()
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/undy-io/smtp-cloud-relay/internal/email"
+	"github.com/undy-io/smtp-cloud-relay/internal/observability"
 )
 
 const (
@@ -30,6 +31,8 @@ type WorkerConfig struct {
 	RetryAttempts    int
 	RetryBaseDelay   time.Duration
 	SubmittedTimeout time.Duration
+	ProviderName     string
+	Metrics          *observability.Metrics
 }
 
 // Worker owns the single-threaded background delivery loop around the durable spool.
@@ -140,8 +143,10 @@ func (w *Worker) processQueuedOnce(ctx context.Context, now time.Time) (bool, er
 	cancel()
 
 	if submitErr != nil {
+		w.cfg.Metrics.ObserveSubmission(w.cfg.ProviderName, submissionOutcomeFromError(submitErr))
 		lastErr := w.lastErrorFromProviderError(submitErr, now)
 		if lastErr.Temporary && w.submitRetryAllowed(rec) {
+			w.cfg.Metrics.IncRetry(observabilityRetryStageSubmit)
 			err = w.finalizeRecord("retry queued record", rec.ID, func(finalizeCtx context.Context) error {
 				_, err := w.store.MarkRetry(finalizeCtx, rec, now.Add(w.submitRetryDelay(rec.Attempt)), lastErr)
 				return err
@@ -157,6 +162,7 @@ func (w *Worker) processQueuedOnce(ctx context.Context, now time.Time) (bool, er
 
 	switch result.State {
 	case email.SubmissionStateSucceeded:
+		w.cfg.Metrics.ObserveSubmission(w.cfg.ProviderName, string(email.SubmissionStateSucceeded))
 		rec.ProviderMessageID = result.ProviderMessageID
 		err = w.finalizeRecord("mark queued record succeeded", rec.ID, func(finalizeCtx context.Context) error {
 			_, err := w.store.MarkSucceeded(finalizeCtx, rec)
@@ -164,6 +170,7 @@ func (w *Worker) processQueuedOnce(ctx context.Context, now time.Time) (bool, er
 		})
 		return true, err
 	case email.SubmissionStateRunning:
+		w.cfg.Metrics.ObserveSubmission(w.cfg.ProviderName, string(email.SubmissionStateRunning))
 		if result.OperationID == "" {
 			err = w.finalizeRecord("dead-letter queued record without operation id", rec.ID, func(finalizeCtx context.Context) error {
 				_, err := w.store.MarkDeadLetter(finalizeCtx, rec, &LastError{
@@ -186,8 +193,10 @@ func (w *Worker) processQueuedOnce(ctx context.Context, now time.Time) (bool, er
 		})
 		return true, err
 	case email.SubmissionStateFailed, email.SubmissionStateCanceled:
+		w.cfg.Metrics.ObserveSubmission(w.cfg.ProviderName, string(result.State))
 		lastErr := lastErrorFromSubmissionFailure(result.Failure, now, submissionFailureMessage(result.State))
 		if lastErr.Temporary && w.submitRetryAllowed(rec) {
+			w.cfg.Metrics.IncRetry(observabilityRetryStageSubmit)
 			err = w.finalizeRecord("retry queued record after terminal submit state", rec.ID, func(finalizeCtx context.Context) error {
 				_, err := w.store.MarkRetry(finalizeCtx, rec, now.Add(w.submitRetryDelay(rec.Attempt)), lastErr)
 				return err
@@ -200,6 +209,7 @@ func (w *Worker) processQueuedOnce(ctx context.Context, now time.Time) (bool, er
 		})
 		return true, err
 	default:
+		w.cfg.Metrics.ObserveSubmission(w.cfg.ProviderName, observabilityOutcomePermanentError)
 		err = w.finalizeRecord("dead-letter queued record after unsupported submit state", rec.ID, func(finalizeCtx context.Context) error {
 			_, err := w.store.MarkDeadLetter(finalizeCtx, rec, &LastError{
 				Message:   fmt.Sprintf("provider returned unsupported submission state %q", result.State),
@@ -237,8 +247,10 @@ func (w *Worker) processSubmittedOnce(ctx context.Context, now time.Time) (bool,
 	cancel()
 
 	if pollErr != nil {
+		w.cfg.Metrics.ObservePoll(w.cfg.ProviderName, pollOutcomeFromError(pollErr))
 		lastErr := w.lastErrorFromProviderError(pollErr, now)
 		if lastErr.Temporary {
+			w.cfg.Metrics.IncRetry(observabilityRetryStagePoll)
 			err = w.finalizeRecord("reschedule submitted record after poll error", rec.ID, func(finalizeCtx context.Context) error {
 				_, err := w.store.MarkRetry(finalizeCtx, rec, now.Add(w.cfg.PollInterval), lastErr)
 				return err
@@ -258,28 +270,33 @@ func (w *Worker) processSubmittedOnce(ctx context.Context, now time.Time) (bool,
 
 	switch status.State {
 	case email.SubmissionStateRunning:
+		w.cfg.Metrics.ObservePoll(w.cfg.ProviderName, string(email.SubmissionStateRunning))
 		nextAttemptAt := now.Add(w.cfg.PollInterval)
 		if status.RetryAfter > 0 {
 			nextAttemptAt = now.Add(status.RetryAfter)
 		}
+		w.cfg.Metrics.IncRetry(observabilityRetryStagePoll)
 		err = w.finalizeRecord("reschedule submitted record after running poll status", rec.ID, func(finalizeCtx context.Context) error {
 			_, err := w.store.MarkRetry(finalizeCtx, rec, nextAttemptAt, nil)
 			return err
 		})
 		return true, err
 	case email.SubmissionStateSucceeded:
+		w.cfg.Metrics.ObservePoll(w.cfg.ProviderName, string(email.SubmissionStateSucceeded))
 		err = w.finalizeRecord("mark submitted record succeeded", rec.ID, func(finalizeCtx context.Context) error {
 			_, err := w.store.MarkSucceeded(finalizeCtx, rec)
 			return err
 		})
 		return true, err
 	case email.SubmissionStateFailed, email.SubmissionStateCanceled:
+		w.cfg.Metrics.ObservePoll(w.cfg.ProviderName, string(status.State))
 		err = w.finalizeRecord("dead-letter submitted record after terminal poll state", rec.ID, func(finalizeCtx context.Context) error {
 			_, err := w.store.MarkDeadLetter(finalizeCtx, rec, lastErrorFromSubmissionFailure(status.Failure, now, submissionFailureMessage(status.State)))
 			return err
 		})
 		return true, err
 	default:
+		w.cfg.Metrics.ObservePoll(w.cfg.ProviderName, observabilityOutcomePermanentError)
 		err = w.finalizeRecord("dead-letter submitted record after unsupported poll state", rec.ID, func(finalizeCtx context.Context) error {
 			_, err := w.store.MarkDeadLetter(finalizeCtx, rec, &LastError{
 				Message:   fmt.Sprintf("provider returned unsupported poll state %q", status.State),
@@ -316,6 +333,29 @@ func (w *Worker) submitRetryDelay(currentAttempt int) time.Duration {
 		shift = 30
 	}
 	return w.cfg.RetryBaseDelay * time.Duration(1<<shift)
+}
+
+const (
+	observabilityRetryStageSubmit   = "submit"
+	observabilityRetryStagePoll     = "poll"
+	observabilityOutcomePermanentError = "permanent_error"
+)
+
+func submissionOutcomeFromError(err error) string {
+	if deliveryErr, ok := email.AsDeliveryError(err); ok {
+		if deliveryErr.Temporary() {
+			return "temporary_error"
+		}
+		return observabilityOutcomePermanentError
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "temporary_error"
+	}
+	return observabilityOutcomePermanentError
+}
+
+func pollOutcomeFromError(err error) string {
+	return submissionOutcomeFromError(err)
 }
 
 func (w *Worker) lastErrorFromProviderError(err error, now time.Time) *LastError {

@@ -51,6 +51,7 @@ func main() {
 		RetryAttempts:    cfg.DeliveryRetryAttempts,
 		RetryBaseDelay:   time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond,
 		SubmittedTimeout: spool.DefaultSubmittedTimeout,
+		ProviderName:     cfg.DeliveryMode,
 	}
 
 	backgroundStore, worker, err := buildBackgroundDelivery(cfg.SpoolDir, logger, deliveryRuntime, workerCfg)
@@ -66,6 +67,14 @@ func main() {
 		os.Exit(1)
 	}
 	logRecoverySummary(logger, recovery)
+	metrics := buildMetrics(backgroundStore)
+	workerCfg.Metrics = metrics
+	worker, err = spool.NewWorker(logger, backgroundStore, deliveryRuntime.Provider, workerCfg)
+	if err != nil {
+		_ = backgroundStore.Close()
+		logger.Error("failed to initialize background delivery worker", "error", err)
+		os.Exit(1)
+	}
 
 	allowedCIDRs, err := config.ParseCIDRs(cfg.SMTPAllowedCIDRs)
 	if err != nil {
@@ -84,7 +93,7 @@ func main() {
 		}
 	}
 
-	handler, handlerTimeout, err := buildMessageHandler(cfg, logger, backgroundStore)
+	handler, handlerTimeout, err := buildMessageHandler(cfg, logger, backgroundStore, metrics)
 	if err != nil {
 		_ = backgroundStore.Close()
 		logger.Error("failed to initialize delivery handler", "error", err)
@@ -105,6 +114,7 @@ func main() {
 		StartTLSEnabled: cfg.SMTPStartTLSEnabled,
 		TLSConfig:       tlsCfg,
 		HandlerTimeout:  handlerTimeout,
+		Metrics:         metrics,
 	}, logger, handler, authProvider)
 	if err != nil {
 		_ = backgroundStore.Close()
@@ -112,9 +122,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	var ready atomic.Bool
-	ready.Store(false)
-	obsServer := observability.NewServer(cfg.HTTPListenAddr, logger, ready.Load)
+	readiness := &processReadiness{}
+	readiness.setRecoveryReady(true)
+	obsServer := observability.NewServer(observability.ServerConfig{
+		Addr:    cfg.HTTPListenAddr,
+		ReadyFn: readiness.Ready,
+		Metrics: metrics,
+	}, logger)
 
 	errCh := make(chan error, 3)
 	workerDone := make(chan struct{})
@@ -137,7 +151,7 @@ func main() {
 
 	select {
 	case <-smtpServer.Ready():
-		ready.Store(true)
+		readiness.setSMTPReady(true)
 		logger.Info("smtp listeners are ready")
 	case <-ctx.Done():
 		logger.Info("shutdown signal received during startup")
@@ -151,11 +165,11 @@ func main() {
 		logger.Info("shutdown signal received")
 	case err := <-errCh:
 		logger.Error("server failed", "error", err)
-		ready.Store(false)
+		readiness.setSMTPReady(false)
 		stop()
 	}
 
-	ready.Store(false)
+	readiness.setSMTPReady(false)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -172,8 +186,8 @@ func main() {
 	}
 }
 
-func buildMessageHandler(cfg config.Config, logger *slog.Logger, store spool.Store) (smtprelay.MessageHandler, time.Duration, error) {
-	relayHandler, err := buildRelayHandler(cfg, logger, store)
+func buildMessageHandler(cfg config.Config, logger *slog.Logger, store spool.Store, metrics *observability.Metrics) (smtprelay.MessageHandler, time.Duration, error) {
+	relayHandler, err := buildRelayHandler(cfg, logger, store, metrics)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -188,13 +202,13 @@ func buildSenderPolicy(cfg config.Config) (email.SenderPolicy, error) {
 }
 
 // buildRelayHandler constructs the durable-enqueue relay service used by the SMTP adapter.
-func buildRelayHandler(cfg config.Config, logger *slog.Logger, store spool.Store) (*relaysvc.Handler, error) {
+func buildRelayHandler(cfg config.Config, logger *slog.Logger, store spool.Store, metrics *observability.Metrics) (*relaysvc.Handler, error) {
 	senderPolicy, err := buildSenderPolicy(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return relaysvc.NewHandler(logger, cfg.SenderPolicyMode, senderPolicy, store, cfg.SMTPMaxInflightSends)
+	return relaysvc.NewHandler(logger, cfg.SenderPolicyMode, senderPolicy, store, cfg.SMTPMaxInflightSends, metrics)
 }
 
 func newEnqueueMessageHandler(logger *slog.Logger, relayHandler *relaysvc.Handler) smtprelay.MessageHandler {
@@ -259,6 +273,13 @@ func buildBackgroundDelivery(root string, logger *slog.Logger, runtime providers
 	return store, worker, nil
 }
 
+func buildMetrics(store *spool.SpoolStore) *observability.Metrics {
+	if store == nil {
+		return observability.NewMetrics(nil)
+	}
+	return observability.NewMetrics(store.StateCounts)
+}
+
 type startupRecoverer interface {
 	Recover(context.Context, time.Time) (spool.RecoveryResult, error)
 }
@@ -281,6 +302,30 @@ func logRecoverySummary(logger *slog.Logger, result spool.RecoveryResult) {
 		"dead_lettered", len(result.DeadLettered),
 		"orphaned_payloads", len(result.OrphanedPayloads),
 	)
+}
+
+type processReadiness struct {
+	smtpReady     atomic.Bool
+	recoveryReady atomic.Bool
+}
+
+func (r *processReadiness) Ready() bool {
+	if r == nil {
+		return false
+	}
+	return r.smtpReady.Load() && r.recoveryReady.Load()
+}
+
+func (r *processReadiness) setSMTPReady(ready bool) {
+	if r != nil {
+		r.smtpReady.Store(ready)
+	}
+}
+
+func (r *processReadiness) setRecoveryReady(ready bool) {
+	if r != nil {
+		r.recoveryReady.Store(ready)
+	}
 }
 
 func loadSMTPServerTLS(certFile, keyFile string) (*tls.Config, error) {
