@@ -729,7 +729,7 @@ Use this format when adding or revising tasks:
   - The `EXDEV` fallback is retained only because the current container filesystem returns cross-device errors for cross-directory renames even inside one spool root.
 
 ### SPOOL-002 — Durable Enqueue Integration Refactor Group
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-001E
@@ -1011,7 +1011,7 @@ Use this format when adding or revising tasks:
   - env and Helm configuration in `SPOOL-006`
 
 ### SPOOL-002F — Durable Enqueue Contract Tests
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-002E

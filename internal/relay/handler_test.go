@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -222,6 +223,51 @@ func TestHandlerSuccessfulEnqueueReturnsNil(t *testing.T) {
 	}
 	if store.message().TextBody != "body" {
 		t.Fatalf("unexpected enqueued message: %#v", store.message())
+	}
+}
+
+func TestHandlerDuplicateMessagesAreEnqueuedSeparately(t *testing.T) {
+	t.Parallel()
+
+	store, err := spool.NewSpoolStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSpoolStore() error: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+	}()
+
+	handler := mustNewHandler(t, email.SenderPolicyOptions{Mode: email.SenderPolicyRewrite}, store, 1)
+	msg := email.Message{
+		EnvelopeFrom: "envelope@example.com",
+		HeaderFrom:   "header@example.com",
+		To:           []string{"to@example.com"},
+		TextBody:     "body",
+	}
+
+	if err := handler.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("first HandleMessage() error: %v", err)
+	}
+	if err := handler.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("second HandleMessage() error: %v", err)
+	}
+
+	first, ok, err := store.ClaimReady(context.Background(), time.Now().UTC())
+	if err != nil || !ok {
+		t.Fatalf("first ClaimReady() = (%#v, %t, %v)", first, ok, err)
+	}
+	second, ok, err := store.ClaimReady(context.Background(), time.Now().UTC())
+	if err != nil || !ok {
+		t.Fatalf("second ClaimReady() = (%#v, %t, %v)", second, ok, err)
+	}
+
+	if first.ID == second.ID {
+		t.Fatalf("expected duplicate submission to produce distinct records, got shared id %q", first.ID)
+	}
+	if !reflect.DeepEqual(first.Message, second.Message) {
+		t.Fatalf("expected duplicate submission payloads to match:\nfirst: %#v\nsecond: %#v", first.Message, second.Message)
 	}
 }
 

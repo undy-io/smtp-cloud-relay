@@ -261,6 +261,128 @@ func TestBuildMessageHandlerEnqueueAdapterReturnsStoreErrorOnWire(t *testing.T) 
 	}
 }
 
+func TestBuildMessageHandlerDoesNotAckBeforeEnqueueCommit(t *testing.T) {
+	t.Parallel()
+
+	addr := freeSMTPTCPAddr(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	handler, handlerTimeout, err := buildMessageHandler(config.Config{
+		DeliveryMode:         "noop",
+		SMTPMaxInflightSends: 1,
+		SenderPolicyMode:     "rewrite",
+	}, testMainLogger(), &stubRelayStore{
+		enqueueFunc: func(ctx context.Context, msg email.Message) (spool.Record, error) {
+			close(started)
+			<-release
+			return spool.Record{ID: "queued-record", Message: msg}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMessageHandler() error: %v", err)
+	}
+	if handlerTimeout != 0 {
+		t.Fatalf("unexpected handler timeout: got %s want 0", handlerTimeout)
+	}
+
+	srv, err := smtprelay.NewServer(smtprelay.Config{
+		ListenAddr:     addr,
+		AllowedCIDRs:   []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")},
+		RequireAuth:    false,
+		RequireTLS:     false,
+		HandlerTimeout: handlerTimeout,
+	}, testMainLogger(), handler, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	stop := startSMTPServerForMainTest(t, srv)
+	defer stop()
+
+	tp := dialSMTPConn(t, addr)
+	defer tp.Close()
+
+	tp.PrintfLine("MAIL FROM:<from@example.com>")
+	if _, _, err := tp.ReadResponse(250); err != nil {
+		t.Fatalf("mail response: %v", err)
+	}
+	tp.PrintfLine("RCPT TO:<to@example.com>")
+	if _, _, err := tp.ReadResponse(250); err != nil {
+		t.Fatalf("rcpt response: %v", err)
+	}
+	tp.PrintfLine("DATA")
+	if _, _, err := tp.ReadResponse(354); err != nil {
+		t.Fatalf("data response: %v", err)
+	}
+
+	tp.PrintfLine("Subject: Delayed Ack")
+	tp.PrintfLine("From: from@example.com")
+	tp.PrintfLine("To: to@example.com")
+	tp.PrintfLine("")
+	tp.PrintfLine("hello relay")
+	tp.PrintfLine(".")
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for enqueue to start")
+	}
+
+	respCh := make(chan error, 1)
+	go func() {
+		_, _, err := tp.ReadResponse(250)
+		respCh <- err
+	}()
+
+	select {
+	case err := <-respCh:
+		t.Fatalf("unexpected SMTP success before enqueue commit completed: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-respCh:
+		if err != nil {
+			t.Fatalf("expected SMTP success after enqueue commit: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SMTP success after enqueue release")
+	}
+
+	tp.PrintfLine("QUIT")
+	if _, _, err := tp.ReadResponse(221); err != nil {
+		t.Fatalf("quit response: %v", err)
+	}
+}
+
+func TestBuildMessageHandlerMapsCanceledEnqueueToTemporaryFailure(t *testing.T) {
+	t.Parallel()
+
+	handler, _, err := buildMessageHandler(config.Config{
+		DeliveryMode:         "noop",
+		SMTPMaxInflightSends: 1,
+		SenderPolicyMode:     "rewrite",
+	}, testMainLogger(), &stubRelayStore{
+		enqueueFunc: func(ctx context.Context, _ email.Message) (spool.Record, error) {
+			<-ctx.Done()
+			return spool.Record{}, ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMessageHandler() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = handler.HandleMessage(ctx, email.Message{
+		EnvelopeFrom: "from@example.com",
+		To:           []string{"to@example.com"},
+	})
+	assertSMTPError(t, err, 451, gosmtp.EnhancedCode{4, 3, 0})
+}
+
 func TestBuildRelayHandlerConstructsHandlerWithoutProviders(t *testing.T) {
 	t.Parallel()
 

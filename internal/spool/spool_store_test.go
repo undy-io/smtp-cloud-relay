@@ -124,6 +124,51 @@ func TestSpoolStoreEnqueueWritesPayloadAndRow(t *testing.T) {
 	}
 }
 
+func TestSpoolStoreEnqueueSurvivesReopenBeforeSubmission(t *testing.T) {
+	store := newSpoolTestStore(t)
+	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+	recordID := testRecordID(0x101)
+	store.now = func() time.Time { return base }
+	store.newID = sequenceIDs(recordID)
+
+	msg := email.Message{
+		EnvelopeFrom: "envelope@example.com",
+		HeaderFrom:   "header@example.com",
+		ReplyTo:      []string{"reply@example.com"},
+		To:           []string{"to@example.com"},
+		TextBody:     "text",
+		HTMLBody:     "<p>text</p>",
+		Attachments: []email.Attachment{
+			{Filename: "note.txt", ContentType: "text/plain", Data: []byte("hello")},
+		},
+	}
+
+	if _, err := store.Enqueue(context.Background(), msg); err != nil {
+		t.Fatalf("Enqueue() error: %v", err)
+	}
+	root := store.records.root
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	reopened, err := NewSpoolStore(root)
+	if err != nil {
+		t.Fatalf("NewSpoolStore() reopen error: %v", err)
+	}
+	defer reopened.Close()
+
+	got, ok, err := reopened.ClaimReady(context.Background(), base.Add(time.Minute))
+	if err != nil || !ok {
+		t.Fatalf("ClaimReady() after reopen = (%#v, %t, %v)", got, ok, err)
+	}
+	if got.ID != recordID {
+		t.Fatalf("unexpected record id after reopen: got %q want %q", got.ID, recordID)
+	}
+	if !reflect.DeepEqual(got.Message, msg) {
+		t.Fatalf("unexpected message after reopen:\n got: %#v\nwant: %#v", got.Message, msg)
+	}
+}
+
 func TestSpoolStoreEnqueueCleansPayloadWhenInsertFails(t *testing.T) {
 	store := newSpoolTestStore(t)
 	recordID := testRecordID(1)
@@ -139,6 +184,74 @@ func TestSpoolStoreEnqueueCleansPayloadWhenInsertFails(t *testing.T) {
 	}
 	if _, statErr := os.Stat(store.payloads.payloadDir(recordID)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected payload cleanup, stat err=%v", statErr)
+	}
+}
+
+func TestSpoolStoreCanceledEnqueueDoesNotCreateClaimableRecord(t *testing.T) {
+	store := newSpoolTestStore(t)
+	recordID := testRecordID(0x102)
+	store.newID = sequenceIDs(recordID)
+
+	lockDB, err := sql.Open(sqliteDriverName, filepath.Join(store.records.root, spoolDBFileName))
+	if err != nil {
+		t.Fatalf("sql.Open(lock db) error: %v", err)
+	}
+	defer lockDB.Close()
+
+	lockConn, err := lockDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("lockDB.Conn() error: %v", err)
+	}
+	defer lockConn.Close()
+
+	if _, err := lockConn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("BEGIN IMMEDIATE error: %v", err)
+	}
+	defer func() {
+		_, _ = lockConn.ExecContext(context.Background(), "ROLLBACK")
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err = store.Enqueue(ctx, email.Message{
+		EnvelopeFrom: "from@example.com",
+		To:           []string{"to@example.com"},
+		TextBody:     "blocked by db lock",
+	})
+	if err == nil {
+		t.Fatal("expected Enqueue() to fail under locked database")
+	}
+
+	if _, err := lockConn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+		t.Fatalf("ROLLBACK error: %v", err)
+	}
+
+	root := store.records.root
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	reopened, err := NewSpoolStore(root)
+	if err != nil {
+		t.Fatalf("NewSpoolStore() reopen error: %v", err)
+	}
+	defer reopened.Close()
+
+	var rowCount int
+	if err := reopened.records.db.QueryRow(`SELECT COUNT(*) FROM records WHERE id = ?`, recordID).Scan(&rowCount); err != nil {
+		t.Fatalf("QueryRow(count) error: %v", err)
+	}
+	if rowCount != 0 {
+		t.Fatalf("expected no durable row after canceled enqueue, count=%d", rowCount)
+	}
+
+	rec, ok, err := reopened.ClaimReady(context.Background(), time.Now().UTC().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ClaimReady() error: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected no claimable record after canceled enqueue, got %#v", rec)
 	}
 }
 
