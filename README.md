@@ -1,30 +1,43 @@
 # smtp-cloud-relay
 
-`smtp-cloud-relay` accepts SMTP mail from local applications (for example Jira/Confluence), parses MIME content, and relays messages to Azure Communication Services Email API or AWS SES v2.
+`smtp-cloud-relay` accepts SMTP mail from local applications such as Jira or Confluence, enforces relay and sender policy, durably spools accepted mail, and delivers it to Azure Communication Services Email or AWS SES v2 from a background worker.
 
 ## What It Does
 
-- SMTP intake using `github.com/emersion/go-smtp`
-- MIME parsing for sender, recipients, subject, text/html, attachments
-- Delivery modes:
-  - `acs` (default): forwards to ACS Email REST API
-  - `ses`: forwards to AWS SES v2
-  - `noop`: accepts/logs only (dev mode)
-- Security controls to avoid open relay posture:
-  - CIDR allowlist
-  - SMTP AUTH PLAIN required
-  - STARTTLS and optional SMTPS listener
-  - optional TLS-required command policy
-- HTTP observability endpoints:
+- Accepts SMTP mail over plain SMTP, STARTTLS, or SMTPS
+- Requires SMTP auth and CIDR allowlisting to avoid open-relay behavior
+- Parses MIME content into a normalized internal message model
+- Enforces deterministic sender handling before acceptance
+- Durably enqueues accepted mail into a local spool
+- Delivers queued mail from a background worker using:
+  - `acs` (default): Azure Communication Services Email
+  - `ses`: AWS SES v2
+  - `noop`: accept and log only
+- Exposes:
   - `/healthz`
   - `/readyz`
-  - `/metrics` (placeholder)
+  - `/metrics`
 
-Runtime note:
+Runtime notes:
 
-- the embedded SMTP server is single-use per process instance
-- `Shutdown(ctx)` is the bounded shutdown API
-- `Close()` remains a blocking compatibility wrapper
+- The embedded SMTP server is single-use per process instance.
+- `Shutdown(ctx)` is the bounded shutdown API.
+- `Close()` remains a blocking compatibility wrapper.
+
+## Delivery Semantics
+
+The relay no longer submits mail to providers on the SMTP request path.
+
+- SMTP `250` means the message was durably enqueued into the local spool.
+- Provider submission happens later in the background worker.
+- The relay guarantees no false success for a single SMTP transaction.
+- Repeated SMTP submissions across separate transactions are not deduplicated in this phase.
+- `SMTP_MAX_INFLIGHT_SENDS` limits concurrent SMTP-path durable enqueue work, not background provider delivery.
+
+Provider behavior:
+
+- ACS uses a submit-plus-poll flow.
+- SES is treated as immediate submission completion in the current implementation.
 
 ## Configuration
 
@@ -37,37 +50,34 @@ All config values support `_FILE` variants for Kubernetes secret mounts.
 - `SMTPS_LISTEN_ADDR` (optional)
 - `HTTP_LISTEN_ADDR` (default `0.0.0.0:8080`)
 
-### Delivery Tuning
-
-These settings are provider-agnostic and replace legacy ACS-specific tuning env names.
-
-- `DELIVERY_RETRY_ATTEMPTS` (default `3`)
-- `DELIVERY_RETRY_BASE_DELAY_MS` (default `1000`)
-- `DELIVERY_HTTP_TIMEOUT_MS` (default `30000`)
-- `DELIVERY_HTTP_MAX_IDLE_CONNS` (default `200`)
-- `DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST` (default `50`)
-- `DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS` (default `90000`)
-
 ### SMTP Security
 
-- `SMTP_ALLOWED_CIDRS` (required, comma/space/newline separated CIDRs)
+- `SMTP_ALLOWED_CIDRS` (required, comma/space/newline-separated CIDRs)
 - `SMTP_REQUIRE_AUTH` (must be `true`)
 - `SMTP_AUTH_PROVIDER` (`static`)
 - `SMTP_AUTH_USERNAME` (required)
 - `SMTP_AUTH_PASSWORD` (required)
 - `SMTP_STARTTLS_ENABLED` (default `true`)
 - `SMTP_REQUIRE_TLS` (default `false`)
-- `SMTP_TLS_CERT_FILE` (required when STARTTLS or SMTPS enabled)
-- `SMTP_TLS_KEY_FILE` (required when STARTTLS or SMTPS enabled)
+- `SMTP_TLS_CERT_FILE` (required when STARTTLS or SMTPS is enabled)
+- `SMTP_TLS_KEY_FILE` (required when STARTTLS or SMTPS is enabled)
 
-### SMTP Performance
+### SMTP Concurrency
 
 - `SMTP_MAX_INFLIGHT_SENDS` (default `200`)
+
+This is the SMTP enqueue-path concurrency limit. It does not control background worker throughput.
 
 ### Sender Policy
 
 - `SENDER_POLICY_MODE` (`rewrite` or `strict`, default `rewrite`)
 - `SENDER_ALLOWED_DOMAINS` (optional comma/space/newline-separated sender-domain matchers)
+
+Matcher forms:
+
+- bare entry: exact domain match, case-insensitive
+- `glob:`: one-label subdomain wildcard only
+- `re:`: full-domain regex, compiled case-insensitively
 
 Examples:
 
@@ -77,22 +87,39 @@ Examples:
 
 Matching is against the sender domain only, never the full email address.
 
-Matcher forms:
-
-- bare entry: exact domain match, case-insensitive
-- `glob:`: one-label subdomain wildcard only
-- `re:`: full-domain regex, compiled case-insensitively
-
-Because the value is list-parsed, individual matcher entries cannot contain commas or spaces.
-
-Outbound provider payloads also inject sender trace headers when those values are available:
+Outbound provider payloads also include sender trace headers when values are available:
 
 - `X-SMTP-Relay-Envelope-From`
 - `X-SMTP-Relay-Header-From`
 
+### Delivery Tuning
+
+These settings are provider-agnostic.
+
+- `DELIVERY_RETRY_ATTEMPTS` (default `3`)
+- `DELIVERY_RETRY_BASE_DELAY_MS` (default `1000`)
+- `DELIVERY_HTTP_TIMEOUT_MS` (default `30000`)
+- `DELIVERY_HTTP_MAX_IDLE_CONNS` (default `200`)
+- `DELIVERY_HTTP_MAX_IDLE_CONNS_PER_HOST` (default `50`)
+- `DELIVERY_HTTP_IDLE_CONN_TIMEOUT_MS` (default `90000`)
+
+### Spool
+
+- `SPOOL_DIR` (default `/var/lib/smtp-cloud-relay/spool`)
+- `SPOOL_POLL_INTERVAL_MS` (default `1000`)
+
+Spool root layout:
+
+- `spool.db`
+- `staging/`
+- `payloads/`
+- `payload-orphans/`
+
+The background worker uses the spool as the durable handoff boundary. Accepted SMTP mail is written here before `250` is returned.
+
 ### ACS Delivery
 
-- `ACS_ENDPOINT` (optional if connection string contains `endpoint=`)
+- `ACS_ENDPOINT` (optional if the connection string contains `endpoint=`)
 - `ACS_CONNECTION_STRING` (required in `acs` mode)
 - `ACS_SENDER` (required in `acs` mode)
 
@@ -108,7 +135,7 @@ Outbound provider payloads also inject sender trace headers when those values ar
 
 ### Outbound TLS / Proxy Trust
 
-- `OUTBOUND_TLS_CA_FILE` (optional path to extra CA bundle; applies to ACS and SES)
+- `OUTBOUND_TLS_CA_FILE` (optional path to an extra CA bundle; applies to ACS and SES)
 - `OUTBOUND_TLS_CA_PEM` (optional inline PEM; applies to ACS and SES)
 
 Compatibility aliases still supported:
@@ -121,6 +148,21 @@ Proxy environment variables are supported for outbound provider traffic:
 - `HTTPS_PROXY`
 - `HTTP_PROXY`
 - `NO_PROXY`
+
+## Observability
+
+- `/healthz` is unconditional liveness.
+- `/readyz` is ready only when:
+  - startup recovery has completed
+  - SMTP listeners are bound
+- `/metrics` exposes real Prometheus metrics for:
+  - denied SMTP sessions
+  - failed SMTP auth
+  - durable enqueue success and failure
+  - spool depth by state
+  - provider submit outcomes
+  - provider poll outcomes
+  - retry and reschedule counters
 
 ## Local Dev
 
@@ -147,12 +189,21 @@ swaks --to test@example.com --from dev@example.com --server 127.0.0.1 --port 252
 
 ## Build and Test
 
+Current `Makefile` targets:
+
+- `make run` -> `go run ./cmd/relay`
+- `make build` -> `go build ./...`
+- `make test` -> `go test ./...`
+- `make image IMAGE=...` -> build the container image
+
+Examples:
+
 ```bash
 make build
 make test
 ```
 
-Build a container image for Helm deployment:
+Build a container image:
 
 ```bash
 make image IMAGE=ghcr.io/your-org/smtp-cloud-relay:0.1.0
@@ -163,6 +214,12 @@ make image IMAGE=ghcr.io/your-org/smtp-cloud-relay:0.1.0
 Chart path:
 
 - `deploy/helm/smtp-cloud-relay`
+
+The chart defaults are bootstrap-friendly, not production-ready:
+
+- `deliveryMode` defaults to `acs`
+- the chart now renders and starts with non-empty bootstrap placeholders
+- provider secrets and SMTP auth secrets still must be overridden for real deployments
 
 Quick render/lint workflow:
 
@@ -176,21 +233,43 @@ helm template smtp-cloud-relay deploy/helm/smtp-cloud-relay \
   --set certManager.dnsNames[0]=smtp-relay.example.internal
 ```
 
+### Spool Persistence
+
+Relevant chart values:
+
+- `spool.dir` (default `/var/lib/smtp-cloud-relay/spool`)
+- `spool.pollIntervalMS` (default `1000`)
+- `spool.persistence.enabled` (default `true`)
+- `spool.persistence.size` (default `10Gi`)
+- `spool.persistence.storageClass` (default empty, cluster default)
+- `spool.persistence.existingClaim` (default empty)
+
+Deployment contract:
+
+- `acs` and `ses` require durable spool persistence.
+- `noop` may use `emptyDir`.
+- provider-backed modes are validated as single replica only.
+- the chart uses fixed PVC access mode `ReadWriteOnce`.
+- the SQLite-backed spool expects single-writer block storage; do not treat RWX/NFS-style shared storage as equivalent.
+
+### TLS, Proxy, And Other Chart Surface
+
 The chart includes:
 
 - Deployment / Service / ServiceAccount
 - ConfigMap + Secret wiring
+- spool PVC support
 - cert-manager `Certificate` (optional)
 - NetworkPolicy
 - PodDisruptionBudget (optional)
 
-Proxy values for Helm are available under:
+Proxy values:
 
 - `proxy.httpProxy`
 - `proxy.httpsProxy`
 - `proxy.noProxy`
 
-Additional cert-manager settings for issuer integrations (including eJBCA-backed issuers):
+Additional cert-manager settings:
 
 - `certManager.issuerRef.group` (default `cert-manager.io`)
 - `certManager.issuerRef.kind`

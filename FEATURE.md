@@ -17,17 +17,19 @@ Use this file as the source of truth for active feature work until the relay mee
   - MIME parsing
   - ACS submission
   - SES submission
+  - durable spool + retry
+  - async provider submit/poll flow
   - `/healthz`
   - `/readyz`
+  - `/metrics`
 - The current tree baseline is stable:
   - `go test ./...` is expected to pass
   - `DELIVERY_MODE=ses` is supported alongside `acs` and `noop`
   - SMTP startup, readiness, shutdown, and provider error mapping are implemented
   - `SENDER-001` through `SENDER-003` are complete
-- The major missing base requirements are:
-  - durable spool + retry
-  - idempotent / safe async delivery flow
-  - real metrics
+  - `SPOOL-001` through `SPOOL-006` are complete
+  - `OBS-001`, `OBS-002`, and `QA-001` are complete
+- The current planned phase is complete after `DOC-001`; remaining items are in `Deferred / Future`.
 
 ## Non-Negotiables
 
@@ -1521,7 +1523,7 @@ Use this format when adding or revising tasks:
   - Do not duplicate enqueue-boundary assertions already owned by `SPOOL-002F`; keep this task focused on full async pipeline and process-lifecycle coverage.
 
 ### DOC-001 — Update README And Deployment Guidance
-- Status: planned
+- Status: done
 - Priority: P2
 - Depends On:
   - CORE-001
