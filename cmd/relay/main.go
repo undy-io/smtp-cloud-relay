@@ -44,7 +44,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	backgroundStore, worker, err := buildBackgroundDelivery(spool.DefaultRoot, logger, deliveryRuntime)
+	workerCfg := spool.WorkerConfig{
+		SubmitTimeout:    deliveryRuntime.SendTimeout,
+		FinalizeTimeout:  spool.DefaultFinalizeTimeout,
+		PollInterval:     spool.DefaultPollInterval,
+		RetryAttempts:    cfg.DeliveryRetryAttempts,
+		RetryBaseDelay:   time.Duration(cfg.DeliveryRetryBaseDelayMS) * time.Millisecond,
+		SubmittedTimeout: spool.DefaultSubmittedTimeout,
+	}
+
+	backgroundStore, worker, err := buildBackgroundDelivery(spool.DefaultRoot, logger, deliveryRuntime, workerCfg)
 	if err != nil {
 		logger.Error("failed to initialize background delivery", "error", err)
 		os.Exit(1)
@@ -195,7 +204,7 @@ func buildRelayHandler(cfg config.Config, logger *slog.Logger, store spool.Store
 }
 
 // buildBackgroundDelivery constructs the durable spool store and background worker before SMTP startup.
-func buildBackgroundDelivery(root string, logger *slog.Logger, runtime providers.Runtime) (*spool.SpoolStore, *spool.Worker, error) {
+func buildBackgroundDelivery(root string, logger *slog.Logger, runtime providers.Runtime, workerCfg spool.WorkerConfig) (*spool.SpoolStore, *spool.Worker, error) {
 	if runtime.Provider == nil {
 		return nil, nil, fmt.Errorf("delivery runtime provider cannot be nil")
 	}
@@ -205,7 +214,7 @@ func buildBackgroundDelivery(root string, logger *slog.Logger, runtime providers
 		return nil, nil, err
 	}
 
-	worker, err := spool.NewWorker(logger, store, runtime.Provider, runtime.SendTimeout)
+	worker, err := spool.NewWorker(logger, store, runtime.Provider, workerCfg)
 	if err != nil {
 		_ = store.Close()
 		return nil, nil, err

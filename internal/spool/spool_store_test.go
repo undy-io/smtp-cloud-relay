@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -273,12 +274,19 @@ func TestSpoolStoreTransitionMethodsPreserveAttemptSemantics(t *testing.T) {
 	}
 
 	store.now = func() time.Time { return base.Add(1 * time.Minute) }
-	submitted, err := store.MarkSubmitted(context.Background(), working, "op-1", "loc-1", base.Add(2*time.Minute))
+	submitted, err := store.MarkSubmitted(context.Background(), working, email.SubmissionResult{
+		OperationID:       "op-1",
+		OperationLocation: "loc-1",
+		ProviderMessageID: "msg-1",
+	}, base.Add(2*time.Minute))
 	if err != nil {
 		t.Fatalf("MarkSubmitted() error: %v", err)
 	}
 	if submitted.Attempt != 1 {
 		t.Fatalf("unexpected submitted attempt: %d", submitted.Attempt)
+	}
+	if submitted.ProviderMessageID != "msg-1" || submitted.FirstSubmittedAt.IsZero() {
+		t.Fatalf("unexpected submitted metadata: %#v", submitted)
 	}
 
 	store.now = func() time.Time { return base.Add(2 * time.Minute) }
@@ -332,6 +340,115 @@ func TestSpoolStoreTransitionMethodsPreserveAttemptSemantics(t *testing.T) {
 	}
 }
 
+func TestSpoolStoreNextSubmittedReadyReturnsMetadataOnlyAndOrdersByDueTime(t *testing.T) {
+	store := newSpoolTestStore(t)
+	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+
+	store.now = func() time.Time { return base }
+	store.newID = sequenceIDs(testRecordID(21), testRecordID(22))
+	if _, err := store.Enqueue(context.Background(), email.Message{To: []string{"a@example.com"}, TextBody: "a"}); err != nil {
+		t.Fatalf("Enqueue(first) error: %v", err)
+	}
+	firstWorking, ok, err := store.ClaimReady(context.Background(), base)
+	if err != nil || !ok {
+		t.Fatalf("ClaimReady(first) = (%#v, %t, %v)", firstWorking, ok, err)
+	}
+	store.now = func() time.Time { return base.Add(1 * time.Minute) }
+	firstSubmitted, err := store.MarkSubmitted(context.Background(), firstWorking, email.SubmissionResult{
+		OperationID:       "op-first",
+		OperationLocation: "loc-first",
+		ProviderMessageID: "msg-first",
+	}, base.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("MarkSubmitted(first) error: %v", err)
+	}
+
+	store.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if _, err := store.Enqueue(context.Background(), email.Message{To: []string{"b@example.com"}, TextBody: "b"}); err != nil {
+		t.Fatalf("Enqueue(second) error: %v", err)
+	}
+	secondWorking, ok, err := store.ClaimReady(context.Background(), base.Add(2*time.Minute))
+	if err != nil || !ok {
+		t.Fatalf("ClaimReady(second) = (%#v, %t, %v)", secondWorking, ok, err)
+	}
+	store.now = func() time.Time { return base.Add(3 * time.Minute) }
+	_, err = store.MarkSubmitted(context.Background(), secondWorking, email.SubmissionResult{
+		OperationID:       "op-second",
+		OperationLocation: "loc-second",
+		ProviderMessageID: "msg-second",
+	}, base.Add(4*time.Minute))
+	if err != nil {
+		t.Fatalf("MarkSubmitted(second) error: %v", err)
+	}
+
+	got, ok, err := store.NextSubmittedReady(context.Background(), base.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("NextSubmittedReady() error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected submitted record")
+	}
+	if got.ID != testRecordID(22) {
+		t.Fatalf("unexpected submitted record id: %q", got.ID)
+	}
+	if !reflect.DeepEqual(got.Message, email.Message{}) {
+		t.Fatalf("expected metadata-only record, got message %#v", got.Message)
+	}
+	if got.ProviderMessageID != "msg-second" || got.FirstSubmittedAt.IsZero() {
+		t.Fatalf("unexpected submitted metadata: %#v", got)
+	}
+	if firstSubmitted.ProviderMessageID != "msg-first" {
+		t.Fatalf("unexpected first submitted metadata: %#v", firstSubmitted)
+	}
+}
+
+func TestSpoolStoreSubmittedStatePreservesProviderMetadata(t *testing.T) {
+	store := newSpoolTestStore(t)
+	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
+
+	store.now = func() time.Time { return base }
+	store.newID = sequenceIDs(testRecordID(23))
+	if _, err := store.Enqueue(context.Background(), email.Message{To: []string{"to@example.com"}, TextBody: "text"}); err != nil {
+		t.Fatalf("Enqueue() error: %v", err)
+	}
+	working, ok, err := store.ClaimReady(context.Background(), base)
+	if err != nil || !ok {
+		t.Fatalf("ClaimReady() = (%#v, %t, %v)", working, ok, err)
+	}
+
+	store.now = func() time.Time { return base.Add(1 * time.Minute) }
+	submitted, err := store.MarkSubmitted(context.Background(), working, email.SubmissionResult{
+		OperationID:       "op-23",
+		OperationLocation: "loc-23",
+		ProviderMessageID: "msg-23",
+	}, base.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("MarkSubmitted() error: %v", err)
+	}
+	firstSubmittedAt := submitted.FirstSubmittedAt
+	if firstSubmittedAt.IsZero() {
+		t.Fatal("expected FirstSubmittedAt to be set")
+	}
+
+	store.now = func() time.Time { return base.Add(2 * time.Minute) }
+	retried, err := store.MarkRetry(context.Background(), submitted, base.Add(3*time.Minute), nil)
+	if err != nil {
+		t.Fatalf("MarkRetry(submitted) error: %v", err)
+	}
+	if retried.ProviderMessageID != "msg-23" || !retried.FirstSubmittedAt.Equal(firstSubmittedAt) {
+		t.Fatalf("submitted retry did not preserve provider metadata: %#v", retried)
+	}
+
+	store.now = func() time.Time { return base.Add(3 * time.Minute) }
+	succeeded, err := store.MarkSucceeded(context.Background(), retried)
+	if err != nil {
+		t.Fatalf("MarkSucceeded(submitted) error: %v", err)
+	}
+	if succeeded.ProviderMessageID != "msg-23" || !succeeded.FirstSubmittedAt.Equal(firstSubmittedAt) {
+		t.Fatalf("submitted success did not preserve provider metadata: %#v", succeeded)
+	}
+}
+
 func TestSpoolStoreRecoverRequeuesSubmittedDeadLettersBrokenAndQuarantinesOrphans(t *testing.T) {
 	store := newSpoolTestStore(t)
 	base := time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC)
@@ -359,7 +476,11 @@ func TestSpoolStoreRecoverRequeuesSubmittedDeadLettersBrokenAndQuarantinesOrphan
 		t.Fatalf("ClaimReady(submitted-broken) = (%#v, %t, %v)", brokenSubmittedWorking, ok, err)
 	}
 	store.now = func() time.Time { return base.Add(2 * time.Minute) }
-	brokenSubmitted, err := store.MarkSubmitted(context.Background(), brokenSubmittedWorking, "op-broken", "loc-broken", base.Add(3*time.Minute))
+	brokenSubmitted, err := store.MarkSubmitted(context.Background(), brokenSubmittedWorking, email.SubmissionResult{
+		OperationID:       "op-broken",
+		OperationLocation: "loc-broken",
+		ProviderMessageID: "msg-broken",
+	}, base.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("MarkSubmitted(submitted-broken) error: %v", err)
 	}
@@ -373,7 +494,11 @@ func TestSpoolStoreRecoverRequeuesSubmittedDeadLettersBrokenAndQuarantinesOrphan
 		t.Fatalf("ClaimReady(submitted-valid) = (%#v, %t, %v)", validSubmittedWorking, ok, err)
 	}
 	store.now = func() time.Time { return base.Add(4 * time.Minute) }
-	_, err = store.MarkSubmitted(context.Background(), validSubmittedWorking, "op-valid", "loc-valid", base.Add(5*time.Minute))
+	_, err = store.MarkSubmitted(context.Background(), validSubmittedWorking, email.SubmissionResult{
+		OperationID:       "op-valid",
+		OperationLocation: "loc-valid",
+		ProviderMessageID: "msg-valid",
+	}, base.Add(5*time.Minute))
 	if err != nil {
 		t.Fatalf("MarkSubmitted(submitted-valid) error: %v", err)
 	}
@@ -647,10 +772,10 @@ func TestSQLiteSchemaRejectsInvalidRecords(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := store.records.db.Exec(`
 				INSERT INTO records (
-					id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
+					id, state, attempt, next_attempt_at_ms, operation_id, operation_location, provider_message_id, first_submitted_at_ms,
 					last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
 					created_at_ms, updated_at_ms
-				) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+				) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
 				tc.id,
 				tc.state,
 				tc.attempt,
@@ -673,7 +798,7 @@ func TestScanMetadataRejectsNonCanonicalIDWithoutTrimming(t *testing.T) {
 
 	row := db.QueryRow(`
 		SELECT
-			id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
+			id, state, attempt, next_attempt_at_ms, operation_id, operation_location, provider_message_id, first_submitted_at_ms,
 			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
 			created_at_ms, updated_at_ms
 		FROM records
@@ -721,7 +846,7 @@ func readSpoolMetadata(t *testing.T, store *SpoolStore, id string) recordMetadat
 	t.Helper()
 	row := store.records.db.QueryRow(`
 		SELECT
-			id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
+			id, state, attempt, next_attempt_at_ms, operation_id, operation_location, provider_message_id, first_submitted_at_ms,
 			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
 			created_at_ms, updated_at_ms
 		FROM records

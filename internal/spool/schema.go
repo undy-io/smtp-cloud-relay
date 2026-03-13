@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS records (
 	next_attempt_at_ms INTEGER NOT NULL CHECK(next_attempt_at_ms > 0),
 	operation_id TEXT,
 	operation_location TEXT,
+	provider_message_id TEXT,
+	first_submitted_at_ms INTEGER CHECK(first_submitted_at_ms IS NULL OR first_submitted_at_ms > 0),
 	last_error_message TEXT,
 	last_error_provider TEXT,
 	last_error_temporary INTEGER CHECK(last_error_temporary IS NULL OR last_error_temporary IN (0, 1)),

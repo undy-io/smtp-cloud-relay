@@ -299,7 +299,7 @@ func TestBuildBackgroundDeliveryUsesExplicitRoot(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	store, worker, err := buildBackgroundDelivery(root, testMainLogger(), testRuntime())
+	store, worker, err := buildBackgroundDelivery(root, testMainLogger(), testRuntime(), testWorkerConfig())
 	if err != nil {
 		t.Fatalf("buildBackgroundDelivery() error: %v", err)
 	}
@@ -351,6 +351,17 @@ func testRuntime() providers.Runtime {
 	}
 }
 
+func testWorkerConfig() spool.WorkerConfig {
+	return spool.WorkerConfig{
+		SubmitTimeout:    time.Second,
+		FinalizeTimeout:  spool.DefaultFinalizeTimeout,
+		PollInterval:     spool.DefaultPollInterval,
+		RetryAttempts:    3,
+		RetryBaseDelay:   time.Second,
+		SubmittedTimeout: spool.DefaultSubmittedTimeout,
+	}
+}
+
 type stubRelayStore struct{}
 
 func (stubRelayStore) Enqueue(context.Context, email.Message) (spool.Record, error) {
@@ -361,7 +372,11 @@ func (stubRelayStore) ClaimReady(context.Context, time.Time) (spool.Record, bool
 	panic("unexpected ClaimReady call")
 }
 
-func (stubRelayStore) MarkSubmitted(context.Context, spool.Record, string, string, time.Time) (spool.Record, error) {
+func (stubRelayStore) NextSubmittedReady(context.Context, time.Time) (spool.Record, bool, error) {
+	panic("unexpected NextSubmittedReady call")
+}
+
+func (stubRelayStore) MarkSubmitted(context.Context, spool.Record, email.SubmissionResult, time.Time) (spool.Record, error) {
 	panic("unexpected MarkSubmitted call")
 }
 

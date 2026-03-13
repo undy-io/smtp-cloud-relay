@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/undy-io/smtp-cloud-relay/internal/email"
 	_ "modernc.org/sqlite"
 )
 
@@ -25,6 +26,8 @@ type recordMetadata struct {
 	NextAttemptAt     time.Time
 	OperationID       string
 	OperationLocation string
+	ProviderMessageID string
+	FirstSubmittedAt  time.Time
 	LastError         *LastError
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -89,15 +92,18 @@ func (s *sqliteRecordStore) insertRecord(ctx context.Context, rec Record) error 
 	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO records (
 			id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
+			provider_message_id, first_submitted_at_ms,
 			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
 			created_at_ms, updated_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID,
 		string(rec.State),
 		rec.Attempt,
 		timeToMillis(rec.NextAttemptAt),
 		nullIfEmpty(rec.OperationID),
 		nullIfEmpty(rec.OperationLocation),
+		nullIfEmpty(rec.ProviderMessageID),
+		nullIfZeroTime(rec.FirstSubmittedAt),
 		lastErrorMessage(rec.LastError),
 		lastErrorProvider(rec.LastError),
 		lastErrorTemporary(rec.LastError),
@@ -125,7 +131,7 @@ func (s *sqliteRecordStore) claimReadyMetadata(ctx context.Context, now time.Tim
 
 	meta, ok, err := queryOneMetadata(ctx, conn, `
 		SELECT
-			id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
+			id, state, attempt, next_attempt_at_ms, operation_id, operation_location, provider_message_id, first_submitted_at_ms,
 			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
 			created_at_ms, updated_at_ms
 		FROM records
@@ -166,7 +172,24 @@ func (s *sqliteRecordStore) claimReadyMetadata(ctx context.Context, now time.Tim
 	return meta, true, nil
 }
 
-func (s *sqliteRecordStore) markSubmitted(ctx context.Context, rec Record, operationID, operationLocation string, nextAttemptAt time.Time) (Record, error) {
+func (s *sqliteRecordStore) nextSubmittedReady(ctx context.Context, now time.Time) (Record, bool, error) {
+	meta, ok, err := queryOneMetadata(ctx, s.db, `
+		SELECT
+			id, state, attempt, next_attempt_at_ms, operation_id, operation_location, provider_message_id, first_submitted_at_ms,
+			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
+			created_at_ms, updated_at_ms
+		FROM records
+		WHERE state = ? AND next_attempt_at_ms <= ?
+		ORDER BY next_attempt_at_ms ASC, created_at_ms ASC, id ASC
+		LIMIT 1`,
+		string(StateSubmitted), timeToMillis(now))
+	if err != nil || !ok {
+		return Record{}, ok, err
+	}
+	return meta.toRecord(), true, nil
+}
+
+func (s *sqliteRecordStore) markSubmitted(ctx context.Context, rec Record, result email.SubmissionResult, nextAttemptAt time.Time) (Record, error) {
 	if rec.State != StateWorking {
 		return Record{}, fmt.Errorf("mark submitted requires %q state, got %q", StateWorking, rec.State)
 	}
@@ -174,11 +197,15 @@ func (s *sqliteRecordStore) markSubmitted(ctx context.Context, rec Record, opera
 	updated := rec
 	updated.State = StateSubmitted
 	updated.Attempt = rec.Attempt + 1
-	updated.OperationID = strings.TrimSpace(operationID)
-	updated.OperationLocation = strings.TrimSpace(operationLocation)
+	updated.OperationID = strings.TrimSpace(result.OperationID)
+	updated.OperationLocation = strings.TrimSpace(result.OperationLocation)
+	updated.ProviderMessageID = strings.TrimSpace(result.ProviderMessageID)
 	updated.NextAttemptAt = nextAttemptAt.UTC()
 	updated.LastError = nil
 	updated.UpdatedAt = s.now().UTC()
+	if updated.FirstSubmittedAt.IsZero() {
+		updated.FirstSubmittedAt = updated.UpdatedAt
+	}
 
 	if err := s.updateRecord(ctx, rec.State, updated); err != nil {
 		return Record{}, err
@@ -198,6 +225,8 @@ func (s *sqliteRecordStore) markRetry(ctx context.Context, rec Record, nextAttem
 		updated.Attempt = rec.Attempt + 1
 		updated.OperationID = ""
 		updated.OperationLocation = ""
+		updated.ProviderMessageID = ""
+		updated.FirstSubmittedAt = time.Time{}
 	case StateSubmitted:
 		updated.State = StateSubmitted
 	default:
@@ -242,6 +271,8 @@ func (s *sqliteRecordStore) markDeadLetter(ctx context.Context, rec Record, last
 		updated.Attempt = rec.Attempt + 1
 		updated.OperationID = ""
 		updated.OperationLocation = ""
+		updated.ProviderMessageID = ""
+		updated.FirstSubmittedAt = time.Time{}
 	case StateSubmitted:
 		updated.Attempt = rec.Attempt
 	default:
@@ -274,7 +305,7 @@ func (s *sqliteRecordStore) recoverMetadata(ctx context.Context, now time.Time) 
 
 	working, err := queryAllMetadata(ctx, conn, `
 		SELECT
-			id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
+			id, state, attempt, next_attempt_at_ms, operation_id, operation_location, provider_message_id, first_submitted_at_ms,
 			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
 			created_at_ms, updated_at_ms
 		FROM records
@@ -285,7 +316,7 @@ func (s *sqliteRecordStore) recoverMetadata(ctx context.Context, now time.Time) 
 	}
 	submitted, err := queryAllMetadata(ctx, conn, `
 		SELECT
-			id, state, attempt, next_attempt_at_ms, operation_id, operation_location,
+			id, state, attempt, next_attempt_at_ms, operation_id, operation_location, provider_message_id, first_submitted_at_ms,
 			last_error_message, last_error_provider, last_error_temporary, last_error_timestamp_ms,
 			created_at_ms, updated_at_ms
 		FROM records
@@ -306,11 +337,14 @@ func (s *sqliteRecordStore) recoverMetadata(ctx context.Context, now time.Time) 
 		requeuedMeta.NextAttemptAt = now
 		requeuedMeta.OperationID = ""
 		requeuedMeta.OperationLocation = ""
+		requeuedMeta.ProviderMessageID = ""
+		requeuedMeta.FirstSubmittedAt = time.Time{}
 		requeuedMeta.UpdatedAt = s.now().UTC()
 
 		if _, err := conn.ExecContext(ctx, `
 			UPDATE records
-			SET state = ?, next_attempt_at_ms = ?, operation_id = NULL, operation_location = NULL, updated_at_ms = ?
+			SET state = ?, next_attempt_at_ms = ?, operation_id = NULL, operation_location = NULL,
+			    provider_message_id = NULL, first_submitted_at_ms = NULL, updated_at_ms = ?
 			WHERE id = ? AND state = ?`,
 			string(requeuedMeta.State),
 			timeToMillis(requeuedMeta.NextAttemptAt),
@@ -349,6 +383,8 @@ func (s *sqliteRecordStore) deadLetterCorruptRecord(ctx context.Context, meta re
 	if meta.State != StateSubmitted {
 		updated.OperationID = ""
 		updated.OperationLocation = ""
+		updated.ProviderMessageID = ""
+		updated.FirstSubmittedAt = time.Time{}
 	}
 
 	rec := updated.toRecord()
@@ -413,6 +449,8 @@ func (s *sqliteRecordStore) updateRecord(ctx context.Context, currentState State
 			next_attempt_at_ms = ?,
 			operation_id = ?,
 			operation_location = ?,
+			provider_message_id = ?,
+			first_submitted_at_ms = ?,
 			last_error_message = ?,
 			last_error_provider = ?,
 			last_error_temporary = ?,
@@ -425,6 +463,8 @@ func (s *sqliteRecordStore) updateRecord(ctx context.Context, currentState State
 		timeToMillis(updated.NextAttemptAt),
 		nullIfEmpty(updated.OperationID),
 		nullIfEmpty(updated.OperationLocation),
+		nullIfEmpty(updated.ProviderMessageID),
+		nullIfZeroTime(updated.FirstSubmittedAt),
 		lastErrorMessage(updated.LastError),
 		lastErrorProvider(updated.LastError),
 		lastErrorTemporary(updated.LastError),
@@ -524,6 +564,8 @@ func (s *sqliteRecordStore) validateCurrentSchema(ctx context.Context) error {
 		"next_attempt_at_ms",
 		"operation_id",
 		"operation_location",
+		"provider_message_id",
+		"first_submitted_at_ms",
 		"last_error_message",
 		"last_error_provider",
 		"last_error_temporary",
@@ -553,6 +595,8 @@ func (s *sqliteRecordStore) validateCurrentSchema(ctx context.Context) error {
 		normalizeSQL("state text not null check(state in ('queued', 'working', 'submitted', 'succeeded', 'dead-letter'))"),
 		normalizeSQL("attempt integer not null check(attempt >= 0)"),
 		normalizeSQL("next_attempt_at_ms integer not null check(next_attempt_at_ms > 0)"),
+		normalizeSQL("provider_message_id text"),
+		normalizeSQL("first_submitted_at_ms integer check(first_submitted_at_ms is null or first_submitted_at_ms > 0)"),
 		normalizeSQL("created_at_ms integer not null check(created_at_ms > 0)"),
 		normalizeSQL("updated_at_ms integer not null check(updated_at_ms > 0 and updated_at_ms >= created_at_ms)"),
 		normalizeSQL("last_error_temporary integer check(last_error_temporary is null or last_error_temporary in (0, 1))"),
@@ -693,8 +737,12 @@ func commitImmediate(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-func queryOneMetadata(ctx context.Context, conn *sql.Conn, query string, args ...any) (recordMetadata, bool, error) {
-	rows, err := conn.QueryContext(ctx, query, args...)
+type queryContextRunner interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func queryOneMetadata(ctx context.Context, runner queryContextRunner, query string, args ...any) (recordMetadata, bool, error) {
+	rows, err := runner.QueryContext(ctx, query, args...)
 	if err != nil {
 		return recordMetadata{}, false, wrapStoreError("query spool metadata", err)
 	}
@@ -712,8 +760,8 @@ func queryOneMetadata(ctx context.Context, conn *sql.Conn, query string, args ..
 	return meta, true, nil
 }
 
-func queryAllMetadata(ctx context.Context, conn *sql.Conn, query string, args ...any) ([]recordMetadata, error) {
-	rows, err := conn.QueryContext(ctx, query, args...)
+func queryAllMetadata(ctx context.Context, runner queryContextRunner, query string, args ...any) ([]recordMetadata, error) {
+	rows, err := runner.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, wrapStoreError("query spool metadata", err)
 	}
@@ -733,8 +781,8 @@ func queryAllMetadata(ctx context.Context, conn *sql.Conn, query string, args ..
 	return out, nil
 }
 
-func queryAllIDs(ctx context.Context, conn *sql.Conn) (map[string]struct{}, error) {
-	rows, err := conn.QueryContext(ctx, `SELECT id FROM records`)
+func queryAllIDs(ctx context.Context, runner queryContextRunner) (map[string]struct{}, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT id FROM records`)
 	if err != nil {
 		return nil, wrapStoreError("query spool ids", err)
 	}
@@ -772,6 +820,8 @@ func scanMetadata(scanner interface {
 		updatedAtMS        int64
 		operationID        sql.NullString
 		operationLocation  sql.NullString
+		providerMessageID  sql.NullString
+		firstSubmittedAtMS sql.NullInt64
 		lastErrMessage     sql.NullString
 		lastErrProvider    sql.NullString
 		lastErrTemporary   sql.NullInt64
@@ -784,6 +834,8 @@ func scanMetadata(scanner interface {
 		&nextAttemptAtMS,
 		&operationID,
 		&operationLocation,
+		&providerMessageID,
+		&firstSubmittedAtMS,
 		&lastErrMessage,
 		&lastErrProvider,
 		&lastErrTemporary,
@@ -820,8 +872,15 @@ func scanMetadata(scanner interface {
 	meta.NextAttemptAt = millisToTime(nextAttemptAtMS)
 	meta.OperationID = strings.TrimSpace(operationID.String)
 	meta.OperationLocation = strings.TrimSpace(operationLocation.String)
+	meta.ProviderMessageID = strings.TrimSpace(providerMessageID.String)
 	meta.CreatedAt = millisToTime(createdAtMS)
 	meta.UpdatedAt = millisToTime(updatedAtMS)
+	if firstSubmittedAtMS.Valid {
+		if firstSubmittedAtMS.Int64 <= 0 {
+			return recordMetadata{}, wrapStoreError("validate spool metadata", fmt.Errorf("spool record %q has invalid first_submitted_at_ms %d", meta.ID, firstSubmittedAtMS.Int64))
+		}
+		meta.FirstSubmittedAt = millisToTime(firstSubmittedAtMS.Int64)
+	}
 	if meta.UpdatedAt.Before(meta.CreatedAt) {
 		return recordMetadata{}, wrapStoreError("validate spool metadata", fmt.Errorf("spool record %q has updated_at before created_at", meta.ID))
 	}
@@ -851,6 +910,8 @@ func (m recordMetadata) toRecord() Record {
 		NextAttemptAt:     m.NextAttemptAt,
 		OperationID:       m.OperationID,
 		OperationLocation: m.OperationLocation,
+		ProviderMessageID: m.ProviderMessageID,
+		FirstSubmittedAt:  m.FirstSubmittedAt,
 		LastError:         normalizeLastError(m.LastError, time.Time{}),
 		CreatedAt:         m.CreatedAt,
 		UpdatedAt:         m.UpdatedAt,
@@ -874,6 +935,13 @@ func nullIfEmpty(value string) any {
 		return nil
 	}
 	return value
+}
+
+func nullIfZeroTime(ts time.Time) any {
+	if ts.IsZero() {
+		return nil
+	}
+	return ts.UTC().UnixMilli()
 }
 
 func lastErrorMessage(lastErr *LastError) any {

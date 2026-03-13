@@ -1299,7 +1299,7 @@ Use this format when adding or revising tasks:
   - end-to-end async pipeline coverage in `QA-001`
 
 ### SPOOL-005B — Steady-State Submit, Poll, Retry, And Timeout Loop
-- Status: planned
+- Status: done
 - Priority: P0
 - Depends On:
   - SPOOL-005A
@@ -1311,7 +1311,10 @@ Use this format when adding or revising tasks:
   - `internal/spool/types.go`
   - `internal/spool/store.go`
   - `internal/spool/spool_store.go`
+  - `internal/spool/sqlite_record_store.go`
   - `internal/spool/schema.go`
+  - `cmd/relay/main.go`
+  - `cmd/relay/main_test.go`
 - Remove: none
 - Symbols:
   - `Worker`
@@ -1326,6 +1329,39 @@ Use this format when adding or revising tasks:
 - Implementation Notes:
   - This checkpoint finishes the background delivery behavior that `SPOOL-002E` depends on.
   - Keep acceptance and implementation consistent with the top-level `SPOOL-005` rules above.
+  - `WorkerConfig` now carries submit timeout, poll cadence, retry budget, backoff, and submitted timeout policy.
+  - `Store.NextSubmittedReady` returns metadata-only records for submitted polling.
+  - `ProviderMessageID` and `FirstSubmittedAt` are now persisted in spool state and preserved across submitted-state reschedules.
+- Later In:
+  - SMTP-path cutover and enqueue-boundary proof in `SPOOL-002E` and `SPOOL-002F`
+  - env and Helm configuration in `SPOOL-006`
+  - full end-to-end coverage in `QA-001`
+
+### SPOOL-005B1 — Bounded Post-Provider Finalization
+- Status: done
+- Priority: P0
+- Depends On:
+  - SPOOL-005B
+- Goal: eliminate the shutdown race between a completed provider call and durable spool-state persistence.
+- Create: none
+- Touch:
+  - `internal/spool/worker.go`
+  - `internal/spool/worker_test.go`
+  - `cmd/relay/main.go`
+  - `cmd/relay/main_test.go`
+- Remove: none
+- Symbols:
+  - `WorkerConfig.FinalizeTimeout`
+  - `DefaultFinalizeTimeout`
+- Acceptance:
+  - provider calls still honor the cancelable worker context and `SubmitTimeout`
+  - post-provider `MarkSubmitted`, `MarkRetry`, `MarkSucceeded`, and `MarkDeadLetter` transitions use a bounded finalize window instead of the canceled process context
+  - if finalization fails, the worker returns an error and process shutdown fails fast instead of silently losing the provider outcome
+  - accepted provider outcomes are given a bounded chance to persist before shutdown continues
+- Implementation Notes:
+  - This is a narrow hardening follow-up to `SPOOL-005B`, not a new worker design.
+  - Prefer duplicate delivery on restart over silent non-delivery if finalization still cannot be persisted.
+  - Do not add config or Helm surface for finalize timeout in this phase.
 - Later In:
   - SMTP-path cutover and enqueue-boundary proof in `SPOOL-002E` and `SPOOL-002F`
   - env and Helm configuration in `SPOOL-006`

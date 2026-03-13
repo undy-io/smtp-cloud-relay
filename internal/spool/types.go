@@ -42,6 +42,8 @@ type Record struct {
 	NextAttemptAt     time.Time     `json:"nextAttemptAt"`
 	OperationID       string        `json:"operationId,omitempty"`
 	OperationLocation string        `json:"operationLocation,omitempty"`
+	ProviderMessageID string        `json:"providerMessageId,omitempty"`
+	FirstSubmittedAt  time.Time     `json:"firstSubmittedAt,omitempty"`
 	LastError         *LastError    `json:"lastError,omitempty"`
 	CreatedAt         time.Time     `json:"createdAt"`
 	UpdatedAt         time.Time     `json:"updatedAt"`

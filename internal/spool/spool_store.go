@@ -122,8 +122,12 @@ func (s *SpoolStore) ClaimReady(ctx context.Context, now time.Time) (Record, boo
 	}
 }
 
-func (s *SpoolStore) MarkSubmitted(ctx context.Context, rec Record, operationID, operationLocation string, nextAttemptAt time.Time) (Record, error) {
-	return s.records.markSubmitted(ctx, rec, operationID, operationLocation, nextAttemptAt)
+func (s *SpoolStore) NextSubmittedReady(ctx context.Context, now time.Time) (Record, bool, error) {
+	return s.records.nextSubmittedReady(ctx, now.UTC())
+}
+
+func (s *SpoolStore) MarkSubmitted(ctx context.Context, rec Record, result email.SubmissionResult, nextAttemptAt time.Time) (Record, error) {
+	return s.records.markSubmitted(ctx, rec, result, nextAttemptAt)
 }
 
 func (s *SpoolStore) MarkRetry(ctx context.Context, rec Record, nextAttemptAt time.Time, lastErr *LastError) (Record, error) {

@@ -36,7 +36,11 @@ func (s *stubStore) ClaimReady(context.Context, time.Time) (spool.Record, bool, 
 	panic("unexpected ClaimReady call")
 }
 
-func (s *stubStore) MarkSubmitted(context.Context, spool.Record, string, string, time.Time) (spool.Record, error) {
+func (s *stubStore) NextSubmittedReady(context.Context, time.Time) (spool.Record, bool, error) {
+	panic("unexpected NextSubmittedReady call")
+}
+
+func (s *stubStore) MarkSubmitted(context.Context, spool.Record, email.SubmissionResult, time.Time) (spool.Record, error) {
 	panic("unexpected MarkSubmitted call")
 }
 
