@@ -6,8 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/netip"
+	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -485,7 +486,7 @@ func TestMainWorkerConfigUsesDeliveryModeAsProviderName(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Config{
-		DeliveryMode:              "ses",
+		DeliveryMode:             "ses",
 		DeliveryRetryAttempts:    3,
 		DeliveryRetryBaseDelayMS: 1000,
 		SpoolPollIntervalMS:      1000,
@@ -540,6 +541,48 @@ func TestProcessReadinessRequiresSMTPAndRecovery(t *testing.T) {
 	if !readiness.Ready() {
 		t.Fatal("expected readiness true when both conditions are ready")
 	}
+}
+
+func TestObservabilityReadyzRequiresRecoveryAndSMTPReady(t *testing.T) {
+	t.Parallel()
+
+	addr := freeSMTPTCPAddr(t)
+	readiness := &processReadiness{}
+	server := observability.NewServer(observability.ServerConfig{
+		Addr:    addr,
+		ReadyFn: readiness.Ready,
+		Metrics: observability.NewMetrics(nil),
+	}, testMainLogger())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			t.Fatalf("Shutdown() error: %v", err)
+		}
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				t.Fatalf("ListenAndServe() error: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for observability server shutdown")
+		}
+	}()
+
+	baseURL := "http://" + addr
+	waitForHTTPStatus(t, baseURL+"/healthz", http.StatusOK)
+	waitForHTTPStatus(t, baseURL+"/readyz", http.StatusServiceUnavailable)
+
+	readiness.setRecoveryReady(true)
+	waitForHTTPStatus(t, baseURL+"/readyz", http.StatusServiceUnavailable)
+
+	readiness.setSMTPReady(true)
+	waitForHTTPStatus(t, baseURL+"/readyz", http.StatusOK)
 }
 
 func testMainLogger() *slog.Logger {
@@ -738,4 +781,20 @@ func sendSMTPMessage(t *testing.T, tp *textproto.Conn, from, to, subject, body s
 	tp.PrintfLine("")
 	tp.PrintfLine("%s", body)
 	tp.PrintfLine(".")
+}
+
+func waitForHTTPStatus(t *testing.T, url string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == want {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s to return %d", url, want)
 }

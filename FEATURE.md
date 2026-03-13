@@ -1484,7 +1484,7 @@ Use this format when adding or revising tasks:
 ## QA + Docs
 
 ### QA-001 — Add Cross-Cutting Integration Coverage
-- Status: planned
+- Status: done
 - Priority: P1
 - Depends On:
   - CORE-002
