@@ -23,37 +23,8 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-
-      - name: Run Go tests
-        run: make test
-
-      - name: Build container image smoke test
-        run: make image IMAGE=smtp-cloud-relay:ci
-
-      - name: Lint Helm chart
-        run: make helm-lint
-
-      - name: Render Helm chart smoke test
-        run: |
-          make helm-template \
-            IMAGE_REPOSITORY=ghcr.io/undy-io/smtp-cloud-relay \
-            CERT_MANAGER_ISSUER_NAME=cluster-issuer \
-            CERT_MANAGER_DNS_NAME=smtp-relay.example.internal
+    # Publish reuses the GitHub-hosted validation workflow; it does not assume devcontainer Docker access.
+    uses: ./.github/workflows/validate-reusable.yml
 
   publish:
     runs-on: ubuntu-latest
@@ -73,50 +44,7 @@ jobs:
 
       - name: Resolve publish metadata
         id: meta
-        run: |
-          set -euo pipefail
-
-          chart_name="$(awk '$1 == "name:" { print $2; exit }' "${CHART_DIR}/Chart.yaml")"
-          chart_version="$(awk '$1 == "version:" { print $2; exit }' "${CHART_DIR}/Chart.yaml")"
-
-          if [[ -z "${chart_name}" || -z "${chart_version}" ]]; then
-            echo "failed to read chart metadata from ${CHART_DIR}/Chart.yaml" >&2
-            exit 1
-          fi
-
-          short_sha="${GITHUB_SHA::12}"
-          sha_tag="sha-${short_sha}"
-
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            release_version="${GITHUB_REF_NAME#v}"
-            if [[ "${GITHUB_REF_NAME}" != v* || -z "${release_version}" ]]; then
-              echo "release tags must use the vX.Y.Z form" >&2
-              exit 1
-            fi
-            if [[ "${release_version}" != "${chart_version}" ]]; then
-              echo "tag version ${release_version} does not match Chart.yaml version ${chart_version}" >&2
-              exit 1
-            fi
-
-            publish_chart_version="${release_version}"
-            publish_app_version="${release_version}"
-            image_tags="${REGISTRY}/${IMAGE_NAME}:${release_version}
-${REGISTRY}/${IMAGE_NAME}:${sha_tag}"
-          else
-            publish_chart_version="${chart_version}-main.${GITHUB_RUN_NUMBER}"
-            publish_app_version="${sha_tag}"
-            image_tags="${REGISTRY}/${IMAGE_NAME}:main
-${REGISTRY}/${IMAGE_NAME}:${sha_tag}"
-          fi
-
-          {
-            echo "chart_version=${publish_chart_version}"
-            echo "chart_app_version=${publish_app_version}"
-            echo "chart_archive=dist/charts/${chart_name}-${publish_chart_version}.tgz"
-            echo "image_tags<<EOF"
-            printf '%s\n' "${image_tags}"
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
+        run: bash ./scripts/ci/resolve-publish-metadata.sh
 
       - name: Log in to GHCR for container pushes
         uses: docker/login-action@v3

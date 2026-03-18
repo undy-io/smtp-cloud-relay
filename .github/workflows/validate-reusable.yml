@@ -1,0 +1,50 @@
+name: Reusable Validate
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Lint GitHub Actions workflows
+        uses: rhysd/actionlint@v1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Run Go tests
+        run: make test
+
+      # Image smoke builds run on GitHub-hosted runners, not inside the devcontainer.
+      - name: Build container image smoke test
+        run: make image IMAGE=smtp-cloud-relay:ci
+
+      - name: Lint Helm chart
+        run: make helm-lint
+
+      - name: Render Helm chart smoke test
+        run: |
+          make helm-template \
+            IMAGE_REPOSITORY=ghcr.io/undy-io/smtp-cloud-relay \
+            CERT_MANAGER_ISSUER_NAME=cluster-issuer \
+            CERT_MANAGER_DNS_NAME=smtp-relay.example.internal
+
+      - name: Package Helm chart smoke test
+        run: make helm-package
