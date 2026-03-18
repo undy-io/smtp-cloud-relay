@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/undy-io/smtp-cloud-relay
-  tag: "latest"
+  tag: "" # defaults to the published chart appVersion when unset
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

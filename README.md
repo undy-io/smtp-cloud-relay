@@ -194,7 +194,10 @@ Current `Makefile` targets:
 - `make run` -> `go run ./cmd/relay`
 - `make build` -> `go build ./...`
 - `make test` -> `go test ./...`
-- `make image IMAGE=...` -> build the container image
+- `make image IMAGE=...` -> build the container image with `docker`, `buildah`, or `podman`
+- `make helm-lint` -> lint the Helm chart
+- `make helm-template ...` -> render the Helm chart locally
+- `make helm-package ...` -> package the Helm chart into `dist/charts/`
 
 Examples:
 
@@ -209,6 +212,30 @@ Build a container image:
 make image IMAGE=ghcr.io/your-org/smtp-cloud-relay:0.1.0
 ```
 
+Builder selection:
+
+- `make image` prefers `docker`, then falls back to `buildah`, then `podman`
+- the checked-in devcontainer is for development and testing, not for container image builds
+- run `make image` from a host environment with `docker`, `buildah`, or `podman`, or in CI
+- `buildah` uses rootless `vfs` storage and `chroot` isolation as a fallback, but some containerized environments still need extra user-namespace support for it to succeed
+- override explicitly with `IMAGE_BUILDER=docker`, `IMAGE_BUILDER=buildah`, or `IMAGE_BUILDER=podman`
+
+Lint and render the Helm chart:
+
+```bash
+make helm-lint
+make helm-template \
+  IMAGE_REPOSITORY=ghcr.io/undy-io/smtp-cloud-relay \
+  CERT_MANAGER_ISSUER_NAME=cluster-issuer \
+  CERT_MANAGER_DNS_NAME=smtp-relay.example.internal
+```
+
+Package the Helm chart with explicit release metadata:
+
+```bash
+make helm-package CHART_VERSION=0.1.0 CHART_APP_VERSION=0.1.0
+```
+
 ## Helm Chart
 
 Chart path:
@@ -220,17 +247,45 @@ The chart defaults are bootstrap-friendly, not production-ready:
 - `deliveryMode` defaults to `acs`
 - the chart now renders and starts with non-empty bootstrap placeholders
 - provider secrets and SMTP auth secrets still must be overridden for real deployments
+- `image.tag` is optional; when unset it defaults to the chart `appVersion`
 
 Quick render/lint workflow:
 
 ```bash
-helm lint deploy/helm/smtp-cloud-relay
-helm template smtp-cloud-relay deploy/helm/smtp-cloud-relay \
-  --api-versions cert-manager.io/v1 \
-  --set certManager.issuerRef.name=cluster-issuer \
-  --set image.repository=ghcr.io/your-org/smtp-cloud-relay \
-  --set image.tag=0.1.0 \
-  --set certManager.dnsNames[0]=smtp-relay.example.internal
+make helm-lint
+make helm-template \
+  IMAGE_REPOSITORY=ghcr.io/your-org/smtp-cloud-relay \
+  IMAGE_TAG=0.1.0 \
+  CERT_MANAGER_ISSUER_NAME=cluster-issuer \
+  CERT_MANAGER_DNS_NAME=smtp-relay.example.internal
+```
+
+## GitHub Actions Artifacts
+
+GitHub Actions publishes deployable artifacts to GHCR:
+
+- container image: `ghcr.io/undy-io/smtp-cloud-relay`
+- Helm chart: `oci://ghcr.io/undy-io/charts/smtp-cloud-relay`
+
+Stable releases come from semver tags:
+
+- pushing `v0.1.0` requires `deploy/helm/smtp-cloud-relay/Chart.yaml` `version: 0.1.0`
+- the publish workflow pushes image tags `0.1.0` and `sha-<shortsha>`
+- the publish workflow pushes chart version `0.1.0` with `appVersion: 0.1.0`
+
+Preview artifacts come from `main`:
+
+- image tags: `main` and `sha-<shortsha>`
+- chart version: `<Chart.yaml version>-main.<run_number>`
+- chart `appVersion`: `sha-<shortsha>`
+
+After each stable release, bump `deploy/helm/smtp-cloud-relay/Chart.yaml` on `main` to the next intended release version before allowing more preview publishes.
+
+Use Helm OCI to pull or install the chart:
+
+```bash
+helm pull oci://ghcr.io/undy-io/charts/smtp-cloud-relay --version 0.1.0
+helm install smtp-cloud-relay oci://ghcr.io/undy-io/charts/smtp-cloud-relay --version 0.1.0
 ```
 
 ### Spool Persistence
