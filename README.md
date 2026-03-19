@@ -215,7 +215,7 @@ make image IMAGE=ghcr.io/your-org/smtp-cloud-relay:0.1.0
 Builder selection:
 
 - `make image` prefers `docker`, then falls back to `buildah`, then `podman`
-- the checked-in devcontainer is for development and testing, not for container image builds
+- the checked-in devcontainer includes `helm` and is suitable for local chart validation, but not for container image builds
 - run `make image` from a host environment with `docker`, `buildah`, or `podman`, or in CI
 - `buildah` uses rootless `vfs` storage and `chroot` isolation as a fallback, but some containerized environments still need extra user-namespace support for it to succeed
 - override explicitly with `IMAGE_BUILDER=docker`, `IMAGE_BUILDER=buildah`, or `IMAGE_BUILDER=podman`
@@ -288,17 +288,19 @@ GitHub Actions publishes deployable artifacts to GHCR:
 
 Stable releases come from semver tags:
 
-- pushing `v0.1.0` requires `deploy/helm/smtp-cloud-relay/Chart.yaml` `version: 0.1.0`
-- the publish workflow pushes image tags `0.1.0` and `sha-<shortsha>`
+- pushing `0.1.0` requires `deploy/helm/smtp-cloud-relay/Chart.yaml` `version: 0.1.0`
+- the publish workflow pushes image tags `0.1.0`, `0.1`, `0`, `latest`, and `sha-<shortsha>`
 - the publish workflow pushes chart version `0.1.0` with `appVersion: 0.1.0`
 
-Preview artifacts come from `main`:
+Nightly artifacts come from `main`:
 
-- image tags: `main` and `sha-<shortsha>`
-- chart version: `<Chart.yaml version>-main.<run_number>`
-- chart `appVersion`: `sha-<shortsha>`
+- image tags: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`, `nightly`, and `sha-<shortsha>`
+- chart version: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
+- chart `appVersion`: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
 
-After each stable release, bump `deploy/helm/smtp-cloud-relay/Chart.yaml` on `main` to the next intended release version before allowing more preview publishes.
+The Helm chart defaults `image.tag` to its own `appVersion`, and rendered manifests expose the expected image major in `smtp-cloud-relay.undy.io/image-major`.
+
+After each stable release, bump `deploy/helm/smtp-cloud-relay/Chart.yaml` on `main` to the next intended release version before allowing more nightly publishes.
 
 Use Helm OCI to pull or install the chart:
 

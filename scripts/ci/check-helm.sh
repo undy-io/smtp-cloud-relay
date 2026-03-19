@@ -3,6 +3,7 @@
 set -euo pipefail
 
 chart_dir="deploy/helm/smtp-cloud-relay"
+chart_name="$(awk '$1 == "name:" { print $2; exit }' "${chart_dir}/Chart.yaml")"
 release_name="smtp-cloud-relay"
 
 portable_tls=(--set-string tls.mode=existingSecret --set-string tls.existingSecretName=relay-tls)
@@ -115,8 +116,38 @@ networkPolicy:
     - 0.0.0.0/0
   egressTCPPorts: []
 VALUES
-expect_render_failure_contains empty-egress-tcp-ports "networkPolicy.egressTCPPorts must contain at least one entry when networkPolicy.egressCIDRs is configured" -f "$empty_egress_ports_values"
+expect_render_failure_contains empty-egress-tcp-ports "networkPolicy.egressTCPPorts must contain at least one entry when networkPolicy.egressCIDRs is configured" --api-versions cert-manager.io/v1 -f "$empty_egress_ports_values"
 expect_render_failure proxy-port-not-allowed "${portable_tls[@]}" --set-string proxy.httpsProxy=http://proxy.internal:8443 --set networkPolicy.egressTCPPorts[0]=443
 expect_render_failure ses-endpoint-port-not-allowed "${portable_tls[@]}" --set-string deliveryMode=ses --set-string ses.region=us-gov-west-1 --set-string ses.sender=no-reply@example.com --set-string ses.endpoint=https://ses.internal.example:8443 --set networkPolicy.egressTCPPorts[0]=443
 
-make helm-package
+stable_chart_version="1.8.2"
+stable_chart_output_dir="${tmp_dir}/stable-charts"
+make helm-package \
+  CHART_OUTPUT_DIR="${stable_chart_output_dir}" \
+  CHART_VERSION="${stable_chart_version}" \
+  CHART_APP_VERSION="${stable_chart_version}"
+stable_chart_archive="${stable_chart_output_dir}/${chart_name}-${stable_chart_version}.tgz"
+if [[ ! -f "${stable_chart_archive}" ]]; then
+  echo "expected packaged stable chart archive at ${stable_chart_archive}" >&2
+  exit 1
+fi
+stable_render="${tmp_dir}/stable-chart.yaml"
+helm template "$release_name" "$stable_chart_archive" "${portable_tls[@]}" >"$stable_render"
+assert_contains "$stable_render" 'image: "ghcr.io/undy-io/smtp-cloud-relay:1.8.2"'
+assert_contains "$stable_render" 'smtp-cloud-relay.undy.io/image-major: "1"'
+
+nightly_chart_version="1.8.3-nightly.77.1"
+nightly_chart_output_dir="${tmp_dir}/nightly-charts"
+make helm-package \
+  CHART_OUTPUT_DIR="${nightly_chart_output_dir}" \
+  CHART_VERSION="${nightly_chart_version}" \
+  CHART_APP_VERSION="${nightly_chart_version}"
+nightly_chart_archive="${nightly_chart_output_dir}/${chart_name}-${nightly_chart_version}.tgz"
+if [[ ! -f "${nightly_chart_archive}" ]]; then
+  echo "expected packaged nightly chart archive at ${nightly_chart_archive}" >&2
+  exit 1
+fi
+nightly_render="${tmp_dir}/nightly-chart.yaml"
+helm template "$release_name" "$nightly_chart_archive" "${portable_tls[@]}" >"$nightly_render"
+assert_contains "$nightly_render" 'image: "ghcr.io/undy-io/smtp-cloud-relay:1.8.3-nightly.77.1"'
+assert_contains "$nightly_render" 'smtp-cloud-relay.undy.io/image-major: "1"'

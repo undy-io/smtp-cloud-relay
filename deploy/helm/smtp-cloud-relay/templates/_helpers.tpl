@@ -19,12 +19,22 @@
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "smtp-cloud-relay.imageTag" -}}
+{{- default .Chart.AppVersion .Values.image.tag -}}
+{{- end -}}
+
+{{- define "smtp-cloud-relay.chartAppMajor" -}}
+{{- $major := regexFind `^[0-9]+` (trim .Chart.AppVersion) -}}
+{{- required "Chart.appVersion must start with a semver major version" $major -}}
+{{- end -}}
+
 {{- define "smtp-cloud-relay.labels" -}}
 helm.sh/chart: {{ include "smtp-cloud-relay.chart" . }}
 app.kubernetes.io/name: {{ include "smtp-cloud-relay.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
+smtp-cloud-relay.undy.io/image-major: {{ include "smtp-cloud-relay.chartAppMajor" . | quote }}
 {{- end -}}
 
 {{- define "smtp-cloud-relay.selectorLabels" -}}
