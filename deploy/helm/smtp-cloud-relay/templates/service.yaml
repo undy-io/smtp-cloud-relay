@@ -10,14 +10,16 @@ spec:
     {{- include "smtp-cloud-relay.selectorLabels" . | nindent 4 }}
   ports:
     - name: smtp
-      port: {{ .Values.service.smtpPort }}
+      port: {{ .Values.smtp.port }}
       targetPort: smtp
       protocol: TCP
+    {{- if .Values.smtp.smtps.enabled }}
     - name: smtps
-      port: {{ .Values.service.smtpsPort }}
+      port: {{ .Values.smtp.smtps.port }}
       targetPort: smtps
       protocol: TCP
+    {{- end }}
     - name: http
-      port: {{ .Values.service.httpPort }}
+      port: {{ .Values.http.port }}
       targetPort: http
       protocol: TCP

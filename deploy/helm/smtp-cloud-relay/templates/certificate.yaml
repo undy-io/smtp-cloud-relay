@@ -1,4 +1,13 @@
-{{- if and .Values.certManager.enabled (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
+{{- $starttlsEnabled := true -}}
+{{- if hasKey .Values.smtp "starttlsEnabled" -}}
+{{- $starttlsEnabled = .Values.smtp.starttlsEnabled -}}
+{{- end -}}
+{{- $smtpsEnabled := false -}}
+{{- if and (hasKey .Values.smtp "smtps") (hasKey .Values.smtp.smtps "enabled") -}}
+{{- $smtpsEnabled = .Values.smtp.smtps.enabled -}}
+{{- end -}}
+{{- $tlsRequested := or $starttlsEnabled $smtpsEnabled .Values.smtp.requireTLS -}}
+{{- if and (eq (lower (default "certManager" .Values.tls.mode)) "certmanager") $tlsRequested }}
 {{- $cn := .Values.certManager.commonName -}}
 {{- $san := list -}}
 {{- range .Values.certManager.dnsNames }}
@@ -10,9 +19,6 @@
 {{- if and $cn (not (has $cn $san)) }}
 {{- $san = append $san $cn -}}
 {{- end }}
-{{- if and (not $cn) (eq (len $san) 0) }}
-{{- fail "certManager.commonName or certManager.dnsNames/altNames must provide at least one DNS name when certManager.enabled=true" -}}
-{{- end }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -20,15 +26,15 @@ metadata:
   labels:
     {{- include "smtp-cloud-relay.labels" . | nindent 4 }}
 spec:
-  secretName: {{ .Values.tls.existingSecret }}
+  secretName: {{ include "smtp-cloud-relay.tlsSecretName" . }}
   duration: {{ .Values.certManager.duration }}
   renewBefore: {{ .Values.certManager.renewBefore }}
   issuerRef:
     {{- if .Values.certManager.issuerRef.group }}
     group: {{ .Values.certManager.issuerRef.group }}
     {{- end }}
-    kind: {{ required "certManager.issuerRef.kind is required when certManager.enabled=true" .Values.certManager.issuerRef.kind }}
-    name: {{ required "certManager.issuerRef.name is required when certManager.enabled=true" .Values.certManager.issuerRef.name }}
+    kind: {{ .Values.certManager.issuerRef.kind }}
+    name: {{ .Values.certManager.issuerRef.name }}
   {{- if $cn }}
   commonName: {{ $cn | quote }}
   {{- end }}

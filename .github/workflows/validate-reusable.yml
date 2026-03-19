@@ -36,15 +36,5 @@ jobs:
       - name: Build container image smoke test
         run: make image IMAGE=smtp-cloud-relay:ci
 
-      - name: Lint Helm chart
-        run: make helm-lint
-
-      - name: Render Helm chart smoke test
-        run: |
-          make helm-template \
-            IMAGE_REPOSITORY=ghcr.io/undy-io/smtp-cloud-relay \
-            CERT_MANAGER_ISSUER_NAME=cluster-issuer \
-            CERT_MANAGER_DNS_NAME=smtp-relay.example.internal
-
-      - name: Package Helm chart smoke test
-        run: make helm-package
+      - name: Run Helm deployment validation
+        run: bash ./scripts/ci/check-helm.sh

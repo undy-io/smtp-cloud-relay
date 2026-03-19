@@ -32,9 +32,6 @@ securityContext:
 
 service:
   type: ClusterIP
-  smtpPort: 2525
-  smtpsPort: 2465
-  httpPort: 8080
 
 resources: {}
 
@@ -67,8 +64,8 @@ proxy:
   noProxy: ""
 
 smtp:
-  listenAddr: 0.0.0.0:2525
-  smtpsListenAddr: 0.0.0.0:2465
+  listenHost: 0.0.0.0
+  port: 2525
   allowedCIDRs:
     - 10.0.0.0/8
   requireAuth: true
@@ -76,13 +73,18 @@ smtp:
   starttlsEnabled: true
   requireTLS: false
   maxInflightSends: 200
+  smtps:
+    enabled: true
+    listenHost: 0.0.0.0
+    port: 2465
 
 senderPolicy:
   mode: rewrite
   allowedDomains: [] # bare exact domains, glob:*.example.com, or re:(?:.+\\.)?example\\.com
 
 http:
-  listenAddr: 0.0.0.0:8080
+  listenHost: 0.0.0.0
+  port: 8080
 
 acs:
   endpoint: ""
@@ -121,12 +123,12 @@ secrets:
     acsTLSCAPEM: ACS_TLS_CA_PEM # deprecated alias for outboundTLSCAPEM
 
 tls:
+  mode: certManager # certManager, existingSecret, or disabled
   certFile: /etc/smtp-tls/tls.crt
   keyFile: /etc/smtp-tls/tls.key
-  existingSecret: smtp-cloud-relay-tls
+  existingSecretName: "" # required when tls.mode=existingSecret
 
 certManager:
-  enabled: true
   issuerRef:
     group: cert-manager.io
     kind: ClusterIssuer
@@ -164,6 +166,9 @@ networkPolicy:
     - 10.0.0.0/8
   egressCIDRs:
     - 0.0.0.0/0
+  egressTCPPorts:
+    - 80
+    - 443
 
 pdb:
   enabled: false

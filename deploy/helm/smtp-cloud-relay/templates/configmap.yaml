@@ -8,8 +8,8 @@ metadata:
 data:
   DELIVERY_MODE: {{ .Values.deliveryMode | quote }}
 
-  SMTP_LISTEN_ADDR: {{ .Values.smtp.listenAddr | quote }}
-  SMTPS_LISTEN_ADDR: {{ .Values.smtp.smtpsListenAddr | quote }}
+  SMTP_LISTEN_ADDR: {{ include "smtp-cloud-relay.smtpListenAddr" . | quote }}
+  SMTPS_LISTEN_ADDR: {{ include "smtp-cloud-relay.smtpsListenAddr" . | quote }}
   SMTP_ALLOWED_CIDRS: {{ join "," .Values.smtp.allowedCIDRs | quote }}
   SMTP_REQUIRE_AUTH: {{ .Values.smtp.requireAuth | quote }}
   SMTP_AUTH_PROVIDER: {{ .Values.smtp.authProvider | quote }}
@@ -21,7 +21,7 @@ data:
   SENDER_POLICY_MODE: {{ .Values.senderPolicy.mode | quote }}
   SENDER_ALLOWED_DOMAINS: {{ join "," .Values.senderPolicy.allowedDomains | quote }}
 
-  HTTP_LISTEN_ADDR: {{ .Values.http.listenAddr | quote }}
+  HTTP_LISTEN_ADDR: {{ include "smtp-cloud-relay.httpListenAddr" . | quote }}
 
   DELIVERY_RETRY_ATTEMPTS: {{ .Values.delivery.retryAttempts | quote }}
   DELIVERY_RETRY_BASE_DELAY_MS: {{ .Values.delivery.retryBaseDelayMS | quote }}

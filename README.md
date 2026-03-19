@@ -220,7 +220,7 @@ Builder selection:
 - `buildah` uses rootless `vfs` storage and `chroot` isolation as a fallback, but some containerized environments still need extra user-namespace support for it to succeed
 - override explicitly with `IMAGE_BUILDER=docker`, `IMAGE_BUILDER=buildah`, or `IMAGE_BUILDER=podman`
 
-Lint and render the Helm chart:
+Lint and validate the Helm chart:
 
 ```bash
 make helm-lint
@@ -228,6 +228,7 @@ make helm-template \
   IMAGE_REPOSITORY=ghcr.io/undy-io/smtp-cloud-relay \
   CERT_MANAGER_ISSUER_NAME=cluster-issuer \
   CERT_MANAGER_DNS_NAME=smtp-relay.example.internal
+bash ./scripts/ci/check-helm.sh
 ```
 
 Package the Helm chart with explicit release metadata:
@@ -242,10 +243,13 @@ Chart path:
 
 - `deploy/helm/smtp-cloud-relay`
 
-The chart defaults are bootstrap-friendly, not production-ready:
+The chart is secure-first and fail-fast:
 
 - `deliveryMode` defaults to `acs`
-- the chart now renders and starts with non-empty bootstrap placeholders
+- TLS defaults to `tls.mode=certManager`
+- if STARTTLS, SMTPS, or `smtp.requireTLS` implies TLS, Helm fails render/install unless a valid certificate source is configured
+- plaintext mode is only allowed when it is configured explicitly with `tls.mode=disabled`, `smtp.starttlsEnabled=false`, `smtp.smtps.enabled=false`, and `smtp.requireTLS=false`
+- the chart intentionally rejects insecure or obviously broken startup settings before a pod is created
 - provider secrets and SMTP auth secrets still must be overridden for real deployments
 - `image.tag` is optional; when unset it defaults to the chart `appVersion`
 
@@ -259,6 +263,21 @@ make helm-template \
   CERT_MANAGER_ISSUER_NAME=cluster-issuer \
   CERT_MANAGER_DNS_NAME=smtp-relay.example.internal
 ```
+
+`make helm-lint` uses a portable `tls.mode=existingSecret` placeholder because `helm lint` cannot advertise cert-manager API availability. `make helm-template` and CI exercise the default `tls.mode=certManager` render path.
+
+Important pre-release chart values:
+
+- `smtp.listenHost`
+- `smtp.port`
+- `smtp.smtps.enabled`
+- `smtp.smtps.listenHost`
+- `smtp.smtps.port`
+- `http.listenHost`
+- `http.port`
+- `tls.mode` (`certManager`, `existingSecret`, `disabled`)
+- `tls.existingSecretName` (required when `tls.mode=existingSecret`)
+- `networkPolicy.egressTCPPorts`
 
 ## GitHub Actions Artifacts
 
@@ -323,6 +342,33 @@ Proxy values:
 - `proxy.httpProxy`
 - `proxy.httpsProxy`
 - `proxy.noProxy`
+
+Listener and TLS values:
+
+- `smtp.listenHost`
+- `smtp.port`
+- `smtp.smtps.enabled`
+- `smtp.smtps.listenHost`
+- `smtp.smtps.port`
+- `http.listenHost`
+- `http.port`
+- `tls.mode`
+- `tls.existingSecretName`
+
+TLS modes:
+
+- `tls.mode=certManager` renders a `Certificate` and stores the result in `<release fullname>-tls`
+- `tls.mode=existingSecret` mounts `tls.existingSecretName`
+- `tls.mode=disabled` is only valid when STARTTLS, SMTPS, and `smtp.requireTLS` are all disabled
+
+NetworkPolicy values:
+
+- `networkPolicy.ingressCIDRs[]`
+- `networkPolicy.egressCIDRs[]`
+- `networkPolicy.egressTCPPorts[]`
+
+If you use nonstandard proxy or explicit provider endpoint ports, add those TCP ports to `networkPolicy.egressTCPPorts`. ACS endpoints hidden inside external secrets or connection strings remain operator-managed for that part.
+When `networkPolicy.egressCIDRs` is configured, `networkPolicy.egressTCPPorts` must contain at least one TCP port.
 
 Additional cert-manager settings:
 

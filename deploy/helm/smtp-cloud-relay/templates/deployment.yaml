@@ -1,4 +1,5 @@
 {{- $outboundTLSCAPEMKey := default .Values.secrets.keys.acsTLSCAPEM .Values.secrets.keys.outboundTLSCAPEM -}}
+{{- $tlsEnabled := or .Values.smtp.starttlsEnabled .Values.smtp.smtps.enabled -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -101,13 +102,15 @@ spec:
             {{- end }}
           ports:
             - name: smtp
-              containerPort: {{ .Values.service.smtpPort }}
+              containerPort: {{ .Values.smtp.port }}
               protocol: TCP
+            {{- if .Values.smtp.smtps.enabled }}
             - name: smtps
-              containerPort: {{ .Values.service.smtpsPort }}
+              containerPort: {{ .Values.smtp.smtps.port }}
               protocol: TCP
+            {{- end }}
             - name: http
-              containerPort: {{ .Values.service.httpPort }}
+              containerPort: {{ .Values.http.port }}
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -130,7 +133,7 @@ spec:
           volumeMounts:
             - name: spool
               mountPath: {{ .Values.spool.dir | quote }}
-            {{- if or .Values.smtp.starttlsEnabled .Values.smtp.smtpsListenAddr }}
+            {{- if $tlsEnabled }}
             - name: smtp-tls
               mountPath: /etc/smtp-tls
               readOnly: true
@@ -148,10 +151,10 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
-        {{- if or .Values.smtp.starttlsEnabled .Values.smtp.smtpsListenAddr }}
+        {{- if $tlsEnabled }}
         - name: smtp-tls
           secret:
-            secretName: {{ .Values.tls.existingSecret }}
+            secretName: {{ include "smtp-cloud-relay.tlsSecretName" . }}
         {{- end }}
         {{- if .Values.extraTrustedCA.enabled }}
         - name: acs-extra-ca

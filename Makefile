@@ -6,6 +6,7 @@ CHART_DIR ?= deploy/helm/smtp-cloud-relay
 CHART_OUTPUT_DIR ?= dist/charts
 HELM_TEMPLATE_RELEASE ?= smtp-cloud-relay
 HELM_API_VERSION ?= cert-manager.io/v1
+HELM_LINT_ARGS ?= --set-string tls.mode=existingSecret --set-string tls.existingSecretName=lint-placeholder
 IMAGE_REPOSITORY ?=
 IMAGE_TAG ?=
 BUILDAH_RUNTIME_DIR ?= /tmp/buildah-run-$(shell id -u)
@@ -72,7 +73,7 @@ else
 endif
 
 helm-lint:
-	helm lint $(CHART_DIR)
+	helm lint $(CHART_DIR) $(HELM_LINT_ARGS)
 
 helm-template:
 	helm template $(HELM_TEMPLATE_RELEASE) $(CHART_DIR) $(HELM_TEMPLATE_ARGS)
