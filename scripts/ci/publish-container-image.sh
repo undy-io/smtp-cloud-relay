@@ -6,6 +6,7 @@ set -euo pipefail
 : "${IMAGE_BUILD_REFS:?IMAGE_BUILD_REFS is required}"
 : "${IMAGE_CANONICAL_REF:?IMAGE_CANONICAL_REF is required}"
 : "${IMAGE_SHA_REF:?IMAGE_SHA_REF is required}"
+: "${IMAGE_PROMOTE_REF:?IMAGE_PROMOTE_REF is required}"
 
 docker_build_context="${DOCKER_BUILD_CONTEXT:-.}"
 registry_probe_retries="${REGISTRY_PROBE_RETRIES:-5}"
@@ -96,14 +97,27 @@ build_and_push() {
   "${command[@]}"
 }
 
-create_aliases() {
+copy_refs() {
   local source_ref="$1"
   shift
-  local alias_ref
+  local command=(docker buildx imagetools create)
+  local target_ref
 
-  for alias_ref in "$@"; do
-    docker buildx imagetools create --tag "${alias_ref}" "${source_ref}" >/dev/null
+  for target_ref in "$@"; do
+    command+=(--tag "${target_ref}")
   done
+
+  command+=("${source_ref}")
+  "${command[@]}" >/dev/null
+}
+
+probe_stable_refs() {
+  probe_remote_digest "${IMAGE_CANONICAL_REF}" canonical_state canonical_digest
+  probe_remote_digest "${IMAGE_SHA_REF}" sha_state sha_digest
+}
+
+stable_refs_match() {
+  [[ "${canonical_state}" == "present" && "${sha_state}" == "present" && "${canonical_digest}" == "${sha_digest}" ]]
 }
 
 declare -a image_build_refs=()
@@ -112,6 +126,9 @@ canonical_state=""
 canonical_digest=""
 sha_state=""
 sha_digest=""
+promote_state=""
+# shellcheck disable=SC2034
+promote_digest=""
 
 read_refs "${IMAGE_BUILD_REFS}" image_build_refs
 read_refs "${IMAGE_ALIAS_REFS:-}" image_alias_refs
@@ -126,21 +143,38 @@ case "${PUBLISH_KIND}" in
     build_and_push "${image_build_refs[@]}"
     ;;
   stable)
-    probe_remote_digest "${IMAGE_CANONICAL_REF}" canonical_state canonical_digest
-    probe_remote_digest "${IMAGE_SHA_REF}" sha_state sha_digest
+    stable_action=""
+    create_failed=0
 
-    if [[ "${canonical_state}" == "present" || "${sha_state}" == "present" ]]; then
-      if [[ "${canonical_state}" != "present" || "${sha_state}" != "present" || "${canonical_digest}" != "${sha_digest}" ]]; then
-        echo "stable image state is inconsistent for ${IMAGE_CANONICAL_REF} and ${IMAGE_SHA_REF}" >&2
-        exit 1
+    probe_stable_refs
+
+    if stable_refs_match; then
+      :
+    elif [[ "${canonical_state}" == "present" && "${sha_state}" == "present" ]]; then
+      echo "stable image state is inconsistent for ${IMAGE_CANONICAL_REF} and ${IMAGE_SHA_REF}" >&2
+      exit 1
+    elif [[ "${canonical_state}" == "present" && "${sha_state}" == "missing" ]]; then
+      stable_action="repair stable sha ref from canonical"
+      if ! copy_refs "${IMAGE_CANONICAL_REF}" "${IMAGE_SHA_REF}"; then
+        create_failed=1
+      fi
+    elif [[ "${canonical_state}" == "missing" && "${sha_state}" == "present" ]]; then
+      stable_action="repair stable canonical ref from stable sha"
+      if ! copy_refs "${IMAGE_SHA_REF}" "${IMAGE_CANONICAL_REF}"; then
+        create_failed=1
       fi
     elif [[ "${canonical_state}" == "missing" && "${sha_state}" == "missing" ]]; then
-      build_and_push "${image_build_refs[@]}"
-      probe_remote_digest "${IMAGE_CANONICAL_REF}" canonical_state canonical_digest
-      probe_remote_digest "${IMAGE_SHA_REF}" sha_state sha_digest
-
-      if [[ "${canonical_state}" != "present" || "${sha_state}" != "present" || "${canonical_digest}" != "${sha_digest}" ]]; then
-        echo "stable image publish did not produce matching digests for ${IMAGE_CANONICAL_REF} and ${IMAGE_SHA_REF}" >&2
+      probe_remote_digest "${IMAGE_PROMOTE_REF}" promote_state promote_digest
+      if [[ "${promote_state}" == "present" ]]; then
+        stable_action="promote nightly manifest to stable refs"
+        if ! copy_refs "${IMAGE_PROMOTE_REF}" "${IMAGE_CANONICAL_REF}" "${IMAGE_SHA_REF}"; then
+          create_failed=1
+        fi
+      elif [[ "${promote_state}" == "missing" ]]; then
+        stable_action="build stable refs"
+        build_and_push "${image_build_refs[@]}"
+      else
+        echo "failed to determine promotion source state for ${IMAGE_PROMOTE_REF}" >&2
         exit 1
       fi
     else
@@ -148,8 +182,20 @@ case "${PUBLISH_KIND}" in
       exit 1
     fi
 
+    probe_stable_refs
+    if ! stable_refs_match; then
+      if [[ "${canonical_state}" == "present" && "${sha_state}" == "present" ]]; then
+        echo "stable image state is inconsistent for ${IMAGE_CANONICAL_REF} and ${IMAGE_SHA_REF}" >&2
+      elif [[ "${create_failed}" == "1" || -n "${stable_action}" ]]; then
+        echo "${stable_action} did not produce matching digests for ${IMAGE_CANONICAL_REF} and ${IMAGE_SHA_REF}" >&2
+      else
+        echo "stable image state is inconsistent for ${IMAGE_CANONICAL_REF} and ${IMAGE_SHA_REF}" >&2
+      fi
+      exit 1
+    fi
+
     if [[ "${#image_alias_refs[@]}" -gt 0 ]]; then
-      create_aliases "${IMAGE_CANONICAL_REF}" "${image_alias_refs[@]}"
+      copy_refs "${IMAGE_CANONICAL_REF}" "${image_alias_refs[@]}"
     fi
     ;;
   *)

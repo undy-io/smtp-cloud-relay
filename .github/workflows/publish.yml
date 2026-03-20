@@ -81,6 +81,7 @@ jobs:
           IMAGE_ALIAS_REFS: ${{ steps.meta.outputs.image_alias_refs }}
           IMAGE_CANONICAL_REF: ${{ steps.meta.outputs.image_canonical_ref }}
           IMAGE_SHA_REF: ${{ steps.meta.outputs.image_sha_ref }}
+          IMAGE_PROMOTE_REF: ${{ steps.meta.outputs.image_promote_ref }}
         run: bash ./scripts/ci/publish-container-image.sh
 
       - name: Package Helm chart

@@ -26,7 +26,8 @@ if [[ ! "${chart_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 short_sha="${GITHUB_SHA::12}"
-sha_tag="sha-${short_sha}"
+stable_sha_tag="sha-${short_sha}"
+nightly_sha_tag="nightly-sha-${short_sha}"
 image_repository="${REGISTRY}/${IMAGE_NAME}"
 
 if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
@@ -47,7 +48,8 @@ if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
   publish_chart_version="${release_version}"
   publish_app_version="${release_version}"
   image_canonical_ref="${image_repository}:${release_version}"
-  image_sha_ref="${image_repository}:${sha_tag}"
+  image_sha_ref="${image_repository}:${stable_sha_tag}"
+  image_promote_ref="${image_repository}:${nightly_sha_tag}"
   printf -v image_build_refs '%s\n%s' \
     "${image_canonical_ref}" \
     "${image_sha_ref}"
@@ -60,7 +62,8 @@ elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
   publish_chart_version="${chart_version}-nightly.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
   publish_app_version="${publish_chart_version}"
   image_canonical_ref="${image_repository}:${publish_chart_version}"
-  image_sha_ref="${image_repository}:${sha_tag}"
+  image_sha_ref="${image_repository}:${nightly_sha_tag}"
+  image_promote_ref="${image_sha_ref}"
   printf -v image_build_refs '%s\n%s\n%s' \
     "${image_canonical_ref}" \
     "${image_repository}:nightly" \
@@ -80,6 +83,7 @@ fi
   echo "image_repository=${image_repository}"
   echo "image_canonical_ref=${image_canonical_ref}"
   echo "image_sha_ref=${image_sha_ref}"
+  echo "image_promote_ref=${image_promote_ref}"
   echo "image_build_refs<<EOF"
   printf '%s\n' "${image_build_refs}"
   echo "EOF"

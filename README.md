@@ -292,15 +292,17 @@ Stable releases come from semver tags:
 - pushing `0.1.0` requires `deploy/helm/smtp-cloud-relay/Chart.yaml` `version: 0.1.0`
 - the publish workflow pushes image tags `0.1.0`, `0.1`, `0`, `latest`, and `sha-<shortsha>`
 - the publish workflow pushes chart version `0.1.0` with `appVersion: 0.1.0`
-- `0.1.0` is the canonical stable image tag; reruns reuse that existing manifest and refresh `0.1`, `0`, and `latest` without rebuilding
+- `0.1.0` is the canonical stable image tag; if `nightly-sha-<shortsha>` already exists for the same commit, the stable release promotes that manifest without rebuilding
+- stable reruns reuse the existing `0.1.0` manifest and refresh `0.1`, `0`, and `latest` without rebuilding
 - the stable OCI chart version in GHCR is treated as immutable; reruns skip `helm push` when that version already exists
 
 Nightly artifacts come from `main`:
 
-- image tags: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`, `nightly`, and `sha-<shortsha>`
+- image tags: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`, `nightly`, and `nightly-sha-<shortsha>`
 - chart version: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
 - chart `appVersion`: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
 - nightly charts are published to GHCR OCI only
+- same-commit nightly reruns move `nightly-sha-<shortsha>` to the latest successful nightly manifest for that commit
 - only the current `main` tip may publish nightly artifacts; reruns of older `main` commits fail before any registry mutation
 
 The Helm chart defaults `image.tag` to its own `appVersion`, and rendered manifests expose the expected image major in `smtp-cloud-relay.undy.io/image-major`.
