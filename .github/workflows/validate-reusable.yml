@@ -34,6 +34,18 @@ jobs:
       - name: Validate publish metadata resolution
         run: bash ./scripts/ci/check-publish-metadata.sh
 
+      - name: Validate main tip freshness guard
+        run: bash ./scripts/ci/check-main-tip-guard.sh
+
+      - name: Validate container image publish logic
+        run: bash ./scripts/ci/check-publish-container-image.sh
+
+      - name: Validate OCI Helm chart publish logic
+        run: bash ./scripts/ci/check-publish-oci-chart.sh
+
+      - name: Validate production Dockerfile base image pinning
+        run: bash ./scripts/ci/check-production-dockerfile.sh
+
       - name: Run Go tests
         run: make test
 
@@ -43,3 +55,6 @@ jobs:
 
       - name: Run Helm deployment validation
         run: bash ./scripts/ci/check-helm.sh
+
+      - name: Run GitHub Pages Helm repo validation
+        run: bash ./scripts/ci/check-gh-pages-chart-repo.sh

@@ -281,24 +281,33 @@ Important pre-release chart values:
 
 ## GitHub Actions Artifacts
 
-GitHub Actions publishes deployable artifacts to GHCR:
+GitHub Actions publishes deployable artifacts to GHCR and GitHub Pages:
 
 - container image: `ghcr.io/undy-io/smtp-cloud-relay`
 - Helm chart: `oci://ghcr.io/undy-io/charts/smtp-cloud-relay`
+- Helm repo: `https://undy-io.github.io/smtp-cloud-relay/charts`
 
 Stable releases come from semver tags:
 
 - pushing `0.1.0` requires `deploy/helm/smtp-cloud-relay/Chart.yaml` `version: 0.1.0`
 - the publish workflow pushes image tags `0.1.0`, `0.1`, `0`, `latest`, and `sha-<shortsha>`
 - the publish workflow pushes chart version `0.1.0` with `appVersion: 0.1.0`
+- `0.1.0` is the canonical stable image tag; reruns reuse that existing manifest and refresh `0.1`, `0`, and `latest` without rebuilding
+- the stable OCI chart version in GHCR is treated as immutable; reruns skip `helm push` when that version already exists
 
 Nightly artifacts come from `main`:
 
 - image tags: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`, `nightly`, and `sha-<shortsha>`
 - chart version: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
 - chart `appVersion`: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
+- nightly charts are published to GHCR OCI only
+- only the current `main` tip may publish nightly artifacts; reruns of older `main` commits fail before any registry mutation
 
 The Helm chart defaults `image.tag` to its own `appVersion`, and rendered manifests expose the expected image major in `smtp-cloud-relay.undy.io/image-major`.
+
+Stable tag publishes update the `gh-pages` branch, then deploy current `gh-pages` content to GitHub Pages in the same release workflow.
+Stable chart artifacts in the Pages repo are immutable: rerunning the same release is a no-op when the chart bytes match, and fails if the bytes differ.
+If a Pages deploy needs to be replayed without a new release, use the manual `Deploy GitHub Pages` workflow to redeploy the current `gh-pages` branch.
 
 After each stable release, bump `deploy/helm/smtp-cloud-relay/Chart.yaml` on `main` to the next intended release version before allowing more nightly publishes.
 
@@ -307,6 +316,15 @@ Use Helm OCI to pull or install the chart:
 ```bash
 helm pull oci://ghcr.io/undy-io/charts/smtp-cloud-relay --version 0.1.0
 helm install smtp-cloud-relay oci://ghcr.io/undy-io/charts/smtp-cloud-relay --version 0.1.0
+```
+
+Use the GitHub Pages-backed Helm repo for stable releases:
+
+```bash
+helm repo add smtp-cloud-relay https://undy-io.github.io/smtp-cloud-relay/charts
+helm repo update
+helm search repo smtp-cloud-relay
+helm install smtp-cloud-relay smtp-cloud-relay/smtp-cloud-relay --version 0.1.0
 ```
 
 ### Spool Persistence
