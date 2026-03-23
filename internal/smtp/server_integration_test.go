@@ -438,10 +438,7 @@ func TestServerDeniedConnectionIncrementsMetric(t *testing.T) {
 	_, _ = io.ReadAll(conn)
 	_ = conn.Close()
 
-	body := scrapeSMTPMetrics(t, metrics)
-	if !strings.Contains(body, "smtp_relay_sessions_denied_total 1") {
-		t.Fatalf("expected denied session metric, got:\n%s", body)
-	}
+	waitForSMTPMetric(t, metrics, "smtp_relay_sessions_denied_total 1")
 }
 
 func TestServerFailedAuthIncrementsMetric(t *testing.T) {
@@ -620,6 +617,22 @@ func scrapeSMTPMetrics(t *testing.T, metrics *observability.Metrics) string {
 	rec := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(rec, req)
 	return rec.Body.String()
+}
+
+func waitForSMTPMetric(t *testing.T, metrics *observability.Metrics, want string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	body := ""
+	for time.Now().Before(deadline) {
+		body = scrapeSMTPMetrics(t, metrics)
+		if strings.Contains(body, want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected metric %q, got:\n%s", want, body)
 }
 
 func testTLSConfig(t *testing.T) *tls.Config {
