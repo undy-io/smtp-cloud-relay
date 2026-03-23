@@ -19,7 +19,7 @@ defaults:
     shell: bash
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: ${{ startsWith(github.ref, 'refs/tags/') && 'publish-stable' || format('publish-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -42,6 +42,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Verify publish ref freshness
         run: bash ./scripts/ci/verify-main-tip.sh
@@ -78,10 +81,15 @@ jobs:
         env:
           PUBLISH_KIND: ${{ steps.meta.outputs.publish_kind }}
           IMAGE_BUILD_REFS: ${{ steps.meta.outputs.image_build_refs }}
-          IMAGE_ALIAS_REFS: ${{ steps.meta.outputs.image_alias_refs }}
           IMAGE_CANONICAL_REF: ${{ steps.meta.outputs.image_canonical_ref }}
           IMAGE_SHA_REF: ${{ steps.meta.outputs.image_sha_ref }}
           IMAGE_PROMOTE_REF: ${{ steps.meta.outputs.image_promote_ref }}
+          IMAGE_MINOR_ALIAS_REF: ${{ steps.meta.outputs.image_minor_alias_ref }}
+          IMAGE_MAJOR_ALIAS_REF: ${{ steps.meta.outputs.image_major_alias_ref }}
+          IMAGE_LATEST_ALIAS_REF: ${{ steps.meta.outputs.image_latest_alias_ref }}
+          IMAGE_MINOR_BLOCKER_REFS: ${{ steps.meta.outputs.image_minor_blocker_refs }}
+          IMAGE_MAJOR_BLOCKER_REFS: ${{ steps.meta.outputs.image_major_blocker_refs }}
+          IMAGE_LATEST_BLOCKER_REFS: ${{ steps.meta.outputs.image_latest_blocker_refs }}
         run: bash ./scripts/ci/publish-container-image.sh
 
       - name: Package Helm chart

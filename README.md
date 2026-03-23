@@ -290,11 +290,14 @@ GitHub Actions publishes deployable artifacts to GHCR and GitHub Pages:
 Stable releases come from semver tags:
 
 - pushing `0.1.0` requires `deploy/helm/smtp-cloud-relay/Chart.yaml` `version: 0.1.0`
+- stable tags are valid when they point to a commit reachable from `main`
 - the publish workflow pushes image tags `0.1.0`, `0.1`, `0`, `latest`, and `sha-<shortsha>`
 - the publish workflow pushes chart version `0.1.0` with `appVersion: 0.1.0`
+- backfilled reachable stable releases may still publish immutable versioned artifacts
+- moving aliases `0.1`, `0`, and `latest` follow the highest published stable release
 - `0.1.0` is the canonical stable image tag; if `nightly-sha-<shortsha>` already exists for the same commit, the stable release promotes that manifest without rebuilding
-- stable reruns reuse the existing `0.1.0` manifest and refresh `0.1`, `0`, and `latest` without rebuilding
-- the stable OCI chart version in GHCR is treated as immutable; reruns skip `helm push` when that version already exists
+- stable reruns reuse the existing `0.1.0` manifest and refresh only the aliases that are not blocked by a higher published stable release
+- the stable OCI chart version in GHCR is treated as immutable; reruns skip `helm push` only when the pulled remote chart bytes match the locally packaged chart, and fail if they differ
 
 Nightly artifacts come from `main`:
 

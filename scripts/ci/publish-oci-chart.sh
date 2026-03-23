@@ -14,6 +14,15 @@ if [[ ! -f "${CHART_ARCHIVE}" ]]; then
 fi
 
 chart_ref="${CHART_REGISTRY}/${CHART_NAME}"
+verify_dir=""
+
+cleanup() {
+  if [[ -n "${verify_dir}" && -d "${verify_dir}" ]]; then
+    rm -rf "${verify_dir}"
+  fi
+}
+
+trap cleanup EXIT
 
 is_missing_chart_probe_error() {
   local error_output="$1"
@@ -42,10 +51,50 @@ probe_chart_version() {
   return 1
 }
 
+archive_digest() {
+  local archive_path="$1"
+
+  sha256sum "${archive_path}" | awk '{print $1}'
+}
+
+verify_remote_chart_matches_local() {
+  local pull_output
+  local remote_archive
+  local local_digest
+  local remote_digest
+
+  verify_dir="$(mktemp -d)"
+
+  if ! pull_output="$(
+    helm pull "${chart_ref}" \
+      --version "${CHART_VERSION}" \
+      --destination "${verify_dir}" 2>&1
+  )"; then
+    echo "helm pull failed for ${chart_ref}@${CHART_VERSION}: ${pull_output}" >&2
+    return 1
+  fi
+
+  remote_archive="${verify_dir}/${CHART_NAME}-${CHART_VERSION}.tgz"
+  if [[ ! -f "${remote_archive}" ]]; then
+    echo "pulled chart archive not found: ${remote_archive}" >&2
+    return 1
+  fi
+
+  local_digest="$(archive_digest "${CHART_ARCHIVE}")"
+  remote_digest="$(archive_digest "${remote_archive}")"
+  if [[ "${local_digest}" != "${remote_digest}" ]]; then
+    echo "remote OCI chart ${chart_ref}@${CHART_VERSION} does not match local archive" >&2
+    echo "local:  ${local_digest}" >&2
+    echo "remote: ${remote_digest}" >&2
+    return 1
+  fi
+}
+
 if [[ "${PUBLISH_KIND}" == "stable" ]]; then
   chart_probe_state=""
   probe_chart_version chart_probe_state
   if [[ "${chart_probe_state}" == "present" ]]; then
+    verify_remote_chart_matches_local
     exit 0
   fi
 fi

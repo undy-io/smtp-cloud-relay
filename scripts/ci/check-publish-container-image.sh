@@ -391,9 +391,11 @@ GITHUB_SHA="fedcba9876543210fedcba9876543210fedcba98" \
 
 assert_equals "$(grep -c '^build ' "${promotion_log}" || true)" "0" "stable-after-nightly build count"
 assert_equals "$(grep -c '^create ' "${promotion_log}")" "5" "stable-after-nightly create count"
-assert_equals "$(grep -c '^create-call ' "${promotion_log}")" "2" "stable-after-nightly create call count"
+assert_equals "$(grep -c '^create-call ' "${promotion_log}")" "4" "stable-after-nightly create call count"
 assert_contains "${promotion_log}" "create-call ${nightly_sha_ref} ${promotion_stable_canonical_ref} ${promotion_stable_sha_ref}"
-assert_contains "${promotion_log}" "create-call ${promotion_stable_canonical_ref} ghcr.io/undy-io/smtp-cloud-relay:1.8 ghcr.io/undy-io/smtp-cloud-relay:1 ghcr.io/undy-io/smtp-cloud-relay:latest"
+assert_contains "${promotion_log}" "create-call ${promotion_stable_canonical_ref} ghcr.io/undy-io/smtp-cloud-relay:1.8"
+assert_contains "${promotion_log}" "create-call ${promotion_stable_canonical_ref} ghcr.io/undy-io/smtp-cloud-relay:1"
+assert_contains "${promotion_log}" "create-call ${promotion_stable_canonical_ref} ghcr.io/undy-io/smtp-cloud-relay:latest"
 assert_ref_digest "${promotion_stable_canonical_ref}" "${nightly_retry_digest}"
 assert_ref_digest "${promotion_stable_sha_ref}" "${nightly_retry_digest}"
 assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8" "${nightly_retry_digest}"
@@ -481,7 +483,7 @@ IMAGE_PROMOTE_REF="${partial_nightly_sha_ref}" \
   bash ./scripts/ci/publish-container-image.sh
 
 assert_equals "$(grep -c '^build ' "${partial_log}" || true)" "0" "partial promotion repair build count"
-assert_equals "$(grep -c '^create-call ' "${partial_log}")" "2" "partial promotion repair create call count"
+assert_equals "$(grep -c '^create-call ' "${partial_log}")" "4" "partial promotion repair create call count"
 assert_contains "${partial_log}" "create-call ${partial_stable_canonical_ref} ${partial_stable_sha_ref}"
 assert_ref_digest "${partial_stable_canonical_ref}" "${partial_initial_digest}"
 assert_ref_digest "${partial_stable_sha_ref}" "${partial_initial_digest}"
@@ -520,7 +522,7 @@ IMAGE_PROMOTE_REF="${sha_only_promote_ref}" \
   bash ./scripts/ci/publish-container-image.sh
 
 assert_equals "$(grep -c '^build ' "${sha_only_log}" || true)" "0" "sha-only repair build count"
-assert_equals "$(grep -c '^create-call ' "${sha_only_log}")" "2" "sha-only repair create call count"
+assert_equals "$(grep -c '^create-call ' "${sha_only_log}")" "4" "sha-only repair create call count"
 assert_contains "${sha_only_log}" "create-call ${sha_only_stable_sha_ref} ${sha_only_stable_canonical_ref}"
 assert_ref_digest "${sha_only_stable_canonical_ref}" "${sha_only_digest}"
 assert_ref_digest "${sha_only_stable_sha_ref}" "${sha_only_digest}"
@@ -528,3 +530,127 @@ assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:3.0" "${sha_only_digest}"
 assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:3" "${sha_only_digest}"
 assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:latest" "${sha_only_digest}"
 assert_ref_digest "${sha_only_promote_ref}" "${sha_only_promote_digest}"
+
+missing_blocker_registry_dir="${tmp_dir}/missing-blocker-registry"
+missing_blocker_log="${tmp_dir}/missing-blocker.log"
+mkdir -p "${missing_blocker_registry_dir}"
+: > "${missing_blocker_log}"
+current_registry_dir="${missing_blocker_registry_dir}"
+
+missing_blocker_canonical_ref="ghcr.io/undy-io/smtp-cloud-relay:1.8.2"
+missing_blocker_sha_ref="ghcr.io/undy-io/smtp-cloud-relay:sha-222222222222"
+missing_blocker_promote_ref="ghcr.io/undy-io/smtp-cloud-relay:nightly-sha-222222222222"
+missing_blocker_build_refs="${missing_blocker_canonical_ref}"$'\n'"${missing_blocker_sha_ref}"
+missing_blocker_alias_refs="ghcr.io/undy-io/smtp-cloud-relay:1.8"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:1"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:latest"
+missing_blocker_digest="sha256:$(printf '%064x' 21)"
+stale_alias_digest="sha256:$(printf '%064x' 20)"
+write_ref_digest "${missing_blocker_canonical_ref}" "${missing_blocker_digest}"
+write_ref_digest "${missing_blocker_sha_ref}" "${missing_blocker_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8" "${stale_alias_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1" "${stale_alias_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:latest" "${stale_alias_digest}"
+
+PATH="${bin_dir}:${PATH}" \
+FAKE_DOCKER_REGISTRY_DIR="${missing_blocker_registry_dir}" \
+FAKE_DOCKER_LOG="${missing_blocker_log}" \
+REGISTRY_PROBE_RETRIES=1 \
+REGISTRY_PROBE_DELAY_SECONDS=0 \
+PUBLISH_KIND=stable \
+IMAGE_BUILD_REFS="${missing_blocker_build_refs}" \
+IMAGE_ALIAS_REFS="${missing_blocker_alias_refs}" \
+IMAGE_CANONICAL_REF="${missing_blocker_canonical_ref}" \
+IMAGE_SHA_REF="${missing_blocker_sha_ref}" \
+IMAGE_PROMOTE_REF="${missing_blocker_promote_ref}" \
+IMAGE_MINOR_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.8.3" \
+IMAGE_MAJOR_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.8.3"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:1.9.0" \
+IMAGE_LATEST_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.8.3"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:1.9.0" \
+  bash ./scripts/ci/publish-container-image.sh
+
+assert_equals "$(grep -c '^create-call ' "${missing_blocker_log}")" "3" "missing blocker alias create call count"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8" "${missing_blocker_digest}"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1" "${missing_blocker_digest}"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:latest" "${missing_blocker_digest}"
+
+published_blocker_registry_dir="${tmp_dir}/published-blocker-registry"
+published_blocker_log="${tmp_dir}/published-blocker.log"
+mkdir -p "${published_blocker_registry_dir}"
+: > "${published_blocker_log}"
+current_registry_dir="${published_blocker_registry_dir}"
+
+published_blocker_canonical_ref="ghcr.io/undy-io/smtp-cloud-relay:1.8.2"
+published_blocker_sha_ref="ghcr.io/undy-io/smtp-cloud-relay:sha-333333333333"
+published_blocker_promote_ref="ghcr.io/undy-io/smtp-cloud-relay:nightly-sha-333333333333"
+published_blocker_build_refs="${published_blocker_canonical_ref}"$'\n'"${published_blocker_sha_ref}"
+published_blocker_alias_refs="ghcr.io/undy-io/smtp-cloud-relay:1.8"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:1"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:latest"
+published_blocker_digest="sha256:$(printf '%064x' 30)"
+higher_patch_digest="sha256:$(printf '%064x' 31)"
+write_ref_digest "${published_blocker_canonical_ref}" "${published_blocker_digest}"
+write_ref_digest "${published_blocker_sha_ref}" "${published_blocker_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8.3" "${higher_patch_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8" "${higher_patch_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1" "${higher_patch_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:latest" "${higher_patch_digest}"
+
+PATH="${bin_dir}:${PATH}" \
+FAKE_DOCKER_REGISTRY_DIR="${published_blocker_registry_dir}" \
+FAKE_DOCKER_LOG="${published_blocker_log}" \
+REGISTRY_PROBE_RETRIES=1 \
+REGISTRY_PROBE_DELAY_SECONDS=0 \
+PUBLISH_KIND=stable \
+IMAGE_BUILD_REFS="${published_blocker_build_refs}" \
+IMAGE_ALIAS_REFS="${published_blocker_alias_refs}" \
+IMAGE_CANONICAL_REF="${published_blocker_canonical_ref}" \
+IMAGE_SHA_REF="${published_blocker_sha_ref}" \
+IMAGE_PROMOTE_REF="${published_blocker_promote_ref}" \
+IMAGE_MINOR_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.8.3" \
+IMAGE_MAJOR_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.8.3" \
+IMAGE_LATEST_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.8.3" \
+  bash ./scripts/ci/publish-container-image.sh
+
+assert_equals "$(grep -c '^create-call ' "${published_blocker_log}" || true)" "0" "published blocker create call count"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8" "${higher_patch_digest}"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1" "${higher_patch_digest}"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:latest" "${higher_patch_digest}"
+
+major_blocker_registry_dir="${tmp_dir}/major-blocker-registry"
+major_blocker_log="${tmp_dir}/major-blocker.log"
+mkdir -p "${major_blocker_registry_dir}"
+: > "${major_blocker_log}"
+current_registry_dir="${major_blocker_registry_dir}"
+
+major_blocker_canonical_ref="ghcr.io/undy-io/smtp-cloud-relay:1.8.3"
+major_blocker_sha_ref="ghcr.io/undy-io/smtp-cloud-relay:sha-444444444444"
+major_blocker_promote_ref="ghcr.io/undy-io/smtp-cloud-relay:nightly-sha-444444444444"
+major_blocker_build_refs="${major_blocker_canonical_ref}"$'\n'"${major_blocker_sha_ref}"
+major_blocker_alias_refs="ghcr.io/undy-io/smtp-cloud-relay:1.8"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:1"$'\n'"ghcr.io/undy-io/smtp-cloud-relay:latest"
+major_blocker_digest="sha256:$(printf '%064x' 40)"
+higher_minor_digest="sha256:$(printf '%064x' 41)"
+previous_minor_digest="sha256:$(printf '%064x' 39)"
+write_ref_digest "${major_blocker_canonical_ref}" "${major_blocker_digest}"
+write_ref_digest "${major_blocker_sha_ref}" "${major_blocker_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.9.0" "${higher_minor_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8" "${previous_minor_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1" "${higher_minor_digest}"
+write_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:latest" "${higher_minor_digest}"
+
+PATH="${bin_dir}:${PATH}" \
+FAKE_DOCKER_REGISTRY_DIR="${major_blocker_registry_dir}" \
+FAKE_DOCKER_LOG="${major_blocker_log}" \
+REGISTRY_PROBE_RETRIES=1 \
+REGISTRY_PROBE_DELAY_SECONDS=0 \
+PUBLISH_KIND=stable \
+IMAGE_BUILD_REFS="${major_blocker_build_refs}" \
+IMAGE_ALIAS_REFS="${major_blocker_alias_refs}" \
+IMAGE_CANONICAL_REF="${major_blocker_canonical_ref}" \
+IMAGE_SHA_REF="${major_blocker_sha_ref}" \
+IMAGE_PROMOTE_REF="${major_blocker_promote_ref}" \
+IMAGE_MINOR_BLOCKER_REFS="" \
+IMAGE_MAJOR_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.9.0" \
+IMAGE_LATEST_BLOCKER_REFS="ghcr.io/undy-io/smtp-cloud-relay:1.9.0" \
+  bash ./scripts/ci/publish-container-image.sh
+
+assert_equals "$(grep -c '^create-call ' "${major_blocker_log}")" "1" "major blocker create call count"
+assert_contains "${major_blocker_log}" "create-call ${major_blocker_canonical_ref} ghcr.io/undy-io/smtp-cloud-relay:1.8"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1.8" "${major_blocker_digest}"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:1" "${higher_minor_digest}"
+assert_ref_digest "ghcr.io/undy-io/smtp-cloud-relay:latest" "${higher_minor_digest}"

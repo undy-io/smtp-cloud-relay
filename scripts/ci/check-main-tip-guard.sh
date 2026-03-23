@@ -63,9 +63,31 @@ git clone "${remote_dir}" "${work_dir}" >/dev/null 2>&1
     exit 1
   fi
 
-  assert_contains "${stale_log}" "refusing to publish stale main commit"
+  assert_contains "${stale_log}" "refusing to publish refs/heads/main"
 
   GITHUB_REF=refs/tags/1.8.2 \
+  GITHUB_SHA="${current_sha}" \
+    bash "${verify_main_tip_copy}"
+
+  GITHUB_REF=refs/tags/1.8.1 \
   GITHUB_SHA="${stale_sha}" \
     bash "${verify_main_tip_copy}"
+
+  git checkout --orphan unrelated >/dev/null 2>&1
+  rm -f tracked.txt
+  printf 'unrelated\n' > unrelated.txt
+  git add unrelated.txt
+  git commit -m "unrelated" >/dev/null
+  git push origin HEAD:unrelated >/dev/null
+  unrelated_sha="$(git rev-parse HEAD)"
+
+  unrelated_tag_log="${tmp_dir}/unrelated-tag.log"
+  if GITHUB_REF=refs/tags/1.8.0 \
+    GITHUB_SHA="${unrelated_sha}" \
+      bash "${verify_main_tip_copy}" >"${unrelated_tag_log}" 2>&1; then
+    echo "expected unrelated stable tag guard to fail" >&2
+    exit 1
+  fi
+
+  assert_contains "${unrelated_tag_log}" "refusing to publish refs/tags/1.8.0"
 )

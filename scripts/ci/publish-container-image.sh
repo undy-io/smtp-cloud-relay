@@ -120,8 +120,41 @@ stable_refs_match() {
   [[ "${canonical_state}" == "present" && "${sha_state}" == "present" && "${canonical_digest}" == "${sha_digest}" ]]
 }
 
+update_alias_from_canonical_if_unblocked() {
+  local alias_ref="$1"
+  shift
+  local blocker_ref=""
+  local blocker_state=""
+  # shellcheck disable=SC2034
+  local blocker_digest=""
+
+  if [[ -z "${alias_ref}" ]]; then
+    return 0
+  fi
+
+  for blocker_ref in "$@"; do
+    probe_remote_digest "${blocker_ref}" blocker_state blocker_digest
+    case "${blocker_state}" in
+      present)
+        return 0
+        ;;
+      missing)
+        ;;
+      *)
+        echo "failed to determine blocker state for ${blocker_ref} while evaluating ${alias_ref}" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  copy_refs "${IMAGE_CANONICAL_REF}" "${alias_ref}"
+}
+
 declare -a image_build_refs=()
-declare -a image_alias_refs=()
+declare -a minor_blocker_refs=()
+declare -a major_blocker_refs=()
+declare -a latest_blocker_refs=()
+declare -a legacy_image_alias_refs=()
 canonical_state=""
 canonical_digest=""
 sha_state=""
@@ -129,9 +162,25 @@ sha_digest=""
 promote_state=""
 # shellcheck disable=SC2034
 promote_digest=""
+image_minor_alias_ref="${IMAGE_MINOR_ALIAS_REF:-}"
+image_major_alias_ref="${IMAGE_MAJOR_ALIAS_REF:-}"
+image_latest_alias_ref="${IMAGE_LATEST_ALIAS_REF:-}"
 
 read_refs "${IMAGE_BUILD_REFS}" image_build_refs
-read_refs "${IMAGE_ALIAS_REFS:-}" image_alias_refs
+read_refs "${IMAGE_MINOR_BLOCKER_REFS:-}" minor_blocker_refs
+read_refs "${IMAGE_MAJOR_BLOCKER_REFS:-}" major_blocker_refs
+read_refs "${IMAGE_LATEST_BLOCKER_REFS:-}" latest_blocker_refs
+read_refs "${IMAGE_ALIAS_REFS:-}" legacy_image_alias_refs
+
+if [[ -z "${image_minor_alias_ref}" && "${#legacy_image_alias_refs[@]}" -gt 0 ]]; then
+  image_minor_alias_ref="${legacy_image_alias_refs[0]}"
+fi
+if [[ -z "${image_major_alias_ref}" && "${#legacy_image_alias_refs[@]}" -gt 1 ]]; then
+  image_major_alias_ref="${legacy_image_alias_refs[1]}"
+fi
+if [[ -z "${image_latest_alias_ref}" && "${#legacy_image_alias_refs[@]}" -gt 2 ]]; then
+  image_latest_alias_ref="${legacy_image_alias_refs[2]}"
+fi
 
 if [[ "${#image_build_refs[@]}" -eq 0 ]]; then
   echo "at least one image build ref is required" >&2
@@ -143,6 +192,9 @@ case "${PUBLISH_KIND}" in
     build_and_push "${image_build_refs[@]}"
     ;;
   stable)
+    : "${image_minor_alias_ref:?IMAGE_MINOR_ALIAS_REF is required for stable publishes}"
+    : "${image_major_alias_ref:?IMAGE_MAJOR_ALIAS_REF is required for stable publishes}"
+    : "${image_latest_alias_ref:?IMAGE_LATEST_ALIAS_REF is required for stable publishes}"
     stable_action=""
     create_failed=0
 
@@ -194,9 +246,9 @@ case "${PUBLISH_KIND}" in
       exit 1
     fi
 
-    if [[ "${#image_alias_refs[@]}" -gt 0 ]]; then
-      copy_refs "${IMAGE_CANONICAL_REF}" "${image_alias_refs[@]}"
-    fi
+    update_alias_from_canonical_if_unblocked "${image_minor_alias_ref}" "${minor_blocker_refs[@]}"
+    update_alias_from_canonical_if_unblocked "${image_major_alias_ref}" "${major_blocker_refs[@]}"
+    update_alias_from_canonical_if_unblocked "${image_latest_alias_ref}" "${latest_blocker_refs[@]}"
     ;;
   *)
     echo "unsupported publish kind ${PUBLISH_KIND}" >&2
