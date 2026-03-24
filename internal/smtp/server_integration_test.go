@@ -434,9 +434,19 @@ func TestServerDeniedConnectionIncrementsMetric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial() error: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	_, _ = io.ReadAll(conn)
-	_ = conn.Close()
+	defer conn.Close()
+
+	tp := textproto.NewConn(conn)
+	defer tp.Close()
+
+	if _, _, err := tp.ReadResponse(220); err != nil {
+		t.Fatalf("read greeting: %v", err)
+	}
+
+	tp.PrintfLine("EHLO localhost")
+	if _, _, err := tp.ReadResponse(554); err != nil {
+		t.Fatalf("expected denied session response: %v", err)
+	}
 
 	waitForSMTPMetric(t, metrics, "smtp_relay_sessions_denied_total 1")
 }
