@@ -12,6 +12,7 @@ fake_sha="0123456789abcdef0123456789abcdef01234567"
 stable_sha_tag="sha-${fake_sha::12}"
 nightly_sha_tag="nightly-sha-${fake_sha::12}"
 chart_dir_rel="deploy/helm/${chart_name}"
+main_branch="master"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
@@ -136,13 +137,13 @@ git init --bare "${remote_dir}" >/dev/null
 git clone "${remote_dir}" "${work_dir}" >/dev/null 2>&1
 git -C "${work_dir}" config user.name "CI Test"
 git -C "${work_dir}" config user.email "ci@example.com"
-git -C "${work_dir}" checkout -b main >/dev/null
+git -C "${work_dir}" checkout -b "${main_branch}" >/dev/null
 
 commit_and_tag "1.8.2"
 commit_and_tag "1.8.3"
 commit_and_tag "1.9.0"
 
-git -C "${work_dir}" push origin HEAD:main --tags >/dev/null
+git -C "${work_dir}" push origin HEAD:"${main_branch}" --tags >/dev/null
 
 git -C "${work_dir}" checkout --orphan unrelated >/dev/null 2>&1
 git -C "${work_dir}" rm -rf . >/dev/null 2>&1 || true
@@ -151,12 +152,12 @@ git -C "${work_dir}" add "${chart_dir_rel}/Chart.yaml"
 git -C "${work_dir}" commit -m "unrelated 2.5.0" >/dev/null
 git -C "${work_dir}" tag "2.5.0"
 git -C "${work_dir}" push origin HEAD:unrelated refs/tags/2.5.0 >/dev/null
-git -C "${work_dir}" checkout main >/dev/null 2>&1
+git -C "${work_dir}" checkout "${main_branch}" >/dev/null 2>&1
 
 nightly_output="${tmp_dir}/nightly.out"
-run_resolver "main" "${nightly_output}" \
-  GITHUB_REF=refs/heads/main \
-  GITHUB_REF_NAME=main \
+run_resolver "${main_branch}" "${nightly_output}" \
+  GITHUB_REF="refs/heads/${main_branch}" \
+  GITHUB_REF_NAME="${main_branch}" \
   GITHUB_RUN_NUMBER=77 \
   GITHUB_RUN_ATTEMPT=1
 
@@ -247,34 +248,34 @@ assert_line_count "$(read_output_multiline "${stable_190_output}" image_major_bl
 assert_line_count "$(read_output_multiline "${stable_190_output}" image_latest_blocker_refs)" 0 "1.9.0 latest blocker count"
 
 expect_failure prefixed-tag \
-  main \
+  "${main_branch}" \
   GITHUB_REF=refs/tags/v1.9.0 \
   GITHUB_REF_NAME=v1.9.0 \
   GITHUB_RUN_NUMBER=88 \
   GITHUB_RUN_ATTEMPT=1
 
 expect_failure non-patch-tag \
-  main \
+  "${main_branch}" \
   GITHUB_REF=refs/tags/1.9 \
   GITHUB_REF_NAME=1.9 \
   GITHUB_RUN_NUMBER=88 \
   GITHUB_RUN_ATTEMPT=1
 
-git -C "${work_dir}" update-ref -d refs/remotes/origin/main
+git -C "${work_dir}" update-ref -d "refs/remotes/origin/${main_branch}"
 
-missing_main_ref_output="${tmp_dir}/missing-main-ref.out"
-missing_main_ref_log="${tmp_dir}/missing-main-ref.log"
+missing_main_ref_output="${tmp_dir}/missing-default-branch-ref.out"
+missing_main_ref_log="${tmp_dir}/missing-default-branch-ref.log"
 if run_resolver "1.8.2" "${missing_main_ref_output}" \
   GITHUB_REF=refs/tags/1.8.2 \
   GITHUB_REF_NAME=1.8.2 \
   GITHUB_RUN_NUMBER=88 \
   GITHUB_RUN_ATTEMPT=1 > "${missing_main_ref_log}" 2>&1; then
-  echo "expected resolve-publish-metadata.sh to fail when origin/main is missing" >&2
+  echo "expected resolve-publish-metadata.sh to fail when origin/${main_branch} is missing" >&2
   exit 1
 fi
 
-assert_contains "${missing_main_ref_log}" "failed to resolve stable blocker source ref origin/main"
+assert_contains "${missing_main_ref_log}" "failed to resolve stable blocker source ref origin/${main_branch}"
 if [[ -s "${missing_main_ref_output}" ]]; then
-  echo "expected no stable metadata output when origin/main is missing" >&2
+  echo "expected no stable metadata output when origin/${main_branch} is missing" >&2
   exit 1
 fi

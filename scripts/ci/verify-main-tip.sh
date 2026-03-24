@@ -6,7 +6,7 @@ set -euo pipefail
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 
 git_remote_name="${PUBLISH_GIT_REMOTE:-origin}"
-git_main_branch="${PUBLISH_MAIN_BRANCH:-main}"
+git_main_branch="${PUBLISH_MAIN_BRANCH:-master}"
 
 case "${GITHUB_REF}" in
   "refs/heads/${git_main_branch}")

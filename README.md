@@ -290,7 +290,7 @@ GitHub Actions publishes deployable artifacts to GHCR and GitHub Pages:
 Stable releases come from semver tags:
 
 - pushing `0.1.0` requires `deploy/helm/smtp-cloud-relay/Chart.yaml` `version: 0.1.0`
-- stable tags are valid when they point to a commit reachable from `main`
+- stable tags are valid when they point to a commit reachable from `master`
 - the publish workflow pushes image tags `0.1.0`, `0.1`, `0`, `latest`, and `sha-<shortsha>`
 - the publish workflow pushes chart version `0.1.0` with `appVersion: 0.1.0`
 - backfilled reachable stable releases may still publish immutable versioned artifacts
@@ -299,14 +299,14 @@ Stable releases come from semver tags:
 - stable reruns reuse the existing `0.1.0` manifest and refresh only the aliases that are not blocked by a higher published stable release
 - the stable OCI chart version in GHCR is treated as immutable; reruns skip `helm push` only when the pulled remote chart bytes match the locally packaged chart, and fail if they differ
 
-Nightly artifacts come from `main`:
+Nightly artifacts come from `master`:
 
 - image tags: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`, `nightly`, and `nightly-sha-<shortsha>`
 - chart version: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
 - chart `appVersion`: `<Chart.yaml version>-nightly.<run_number>.<run_attempt>`
 - nightly charts are published to GHCR OCI only
 - same-commit nightly reruns move `nightly-sha-<shortsha>` to the latest successful nightly manifest for that commit
-- only the current `main` tip may publish nightly artifacts; reruns of older `main` commits fail before any registry mutation
+- only the current `master` tip may publish nightly artifacts; reruns of older `master` commits fail before any registry mutation
 
 The Helm chart defaults `image.tag` to its own `appVersion`, and rendered manifests expose the expected image major in `smtp-cloud-relay.undy.io/image-major`.
 
@@ -314,7 +314,7 @@ Stable tag publishes update the `gh-pages` branch, then deploy current `gh-pages
 Stable chart artifacts in the Pages repo are immutable: rerunning the same release is a no-op when the chart bytes match, and fails if the bytes differ.
 If a Pages deploy needs to be replayed without a new release, use the manual `Deploy GitHub Pages` workflow to redeploy the current `gh-pages` branch.
 
-After each stable release, bump `deploy/helm/smtp-cloud-relay/Chart.yaml` on `main` to the next intended release version before allowing more nightly publishes.
+After each stable release, bump `deploy/helm/smtp-cloud-relay/Chart.yaml` on `master` to the next intended release version before allowing more nightly publishes.
 
 Use Helm OCI to pull or install the chart:
 

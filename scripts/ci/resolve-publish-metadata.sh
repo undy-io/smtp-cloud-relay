@@ -29,7 +29,7 @@ short_sha="${GITHUB_SHA::12}"
 stable_sha_tag="sha-${short_sha}"
 nightly_sha_tag="nightly-sha-${short_sha}"
 git_remote_name="${PUBLISH_GIT_REMOTE:-origin}"
-git_main_branch="${PUBLISH_MAIN_BRANCH:-main}"
+git_main_branch="${PUBLISH_MAIN_BRANCH:-master}"
 stable_blocker_source_ref="${git_remote_name}/${git_main_branch}"
 image_repository="${REGISTRY}/${IMAGE_NAME}"
 image_minor_alias_ref=""
@@ -130,7 +130,7 @@ if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
   format_ref_lines minor_blockers image_minor_blocker_refs
   format_ref_lines major_blockers image_major_blocker_refs
   format_ref_lines latest_blockers image_latest_blocker_refs
-elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+elif [[ "${GITHUB_REF}" == "refs/heads/${git_main_branch}" ]]; then
   publish_kind="nightly"
   publish_chart_version="${chart_version}-nightly.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
   publish_app_version="${publish_chart_version}"
@@ -142,7 +142,7 @@ elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
     "${image_repository}:nightly" \
     "${image_sha_ref}"
 else
-  echo "unsupported ref ${GITHUB_REF}; only refs/heads/main and refs/tags/X.Y.Z are supported" >&2
+  echo "unsupported ref ${GITHUB_REF}; only refs/heads/${git_main_branch} and refs/tags/X.Y.Z are supported" >&2
   exit 1
 fi
 

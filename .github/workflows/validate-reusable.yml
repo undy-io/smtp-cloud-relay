@@ -34,7 +34,7 @@ jobs:
       - name: Validate publish metadata resolution
         run: bash ./scripts/ci/check-publish-metadata.sh
 
-      - name: Validate main tip freshness guard
+      - name: Validate default branch freshness guard
         run: bash ./scripts/ci/check-main-tip-guard.sh
 
       - name: Validate container image publish logic
